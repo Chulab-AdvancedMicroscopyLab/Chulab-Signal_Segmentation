@@ -4,7 +4,6 @@ Dynamically discovers Image, GT, and Prediction triplets without hardcoded names
 """
 import argparse
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -13,7 +12,7 @@ import numpy as np
 import tifffile
 from tqdm import tqdm
 
-from utils.metrics import confusion_from_arrays, accumulate_confusion, compute_metrics
+from utils.metrics import accumulate_confusion, compute_metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("analysis")
@@ -58,9 +57,9 @@ def write_results(rows: List[Dict[str, object]], summary_rows: List[Dict[str, ob
         import csv
         csv_path = out_path.with_suffix(".csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=HEADERS)
+            w = csv.DictWriter(f, fieldnames=SUMMARY_HEADERS)
             w.writeheader()
-            for r in rows: w.writerow({k: r.get(k) for k in HEADERS})
+            for r in rows: w.writerow({k: r.get(k) for k in SUMMARY_HEADERS})
         logger.info(f"Detailed results saved to {csv_path}")
 
 def evaluate_triplet(gt_dir: Path, pred_dir: Path) -> Dict[str, float]:

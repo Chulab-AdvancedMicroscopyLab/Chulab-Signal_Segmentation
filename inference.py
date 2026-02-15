@@ -45,7 +45,7 @@ def run_inference(model: torch.nn.Module, loader: DataLoader, device: torch.devi
     model.eval()
     outputs = []
     with torch.no_grad():
-        for inputs in tqdm(loader, desc="    Inference Batch", leave=False):
+        for inputs in loader:
             if isinstance(inputs, (list, tuple)):
                 inputs = inputs[0]
             inputs = inputs.to(device)
@@ -109,7 +109,7 @@ def disk_manager_worker(
                 actual_chunk_depth = res_z_end - res_z_start
                 local_positions = [(pos[0] - res_z_start, pos[1], pos[2]) for pos in data_position]
                 
-                logging.info(f"  Stitching Z:{res_z_start}-{res_z_end}...")
+                logging.info(f"  Stitching Z: {res_z_start}-{res_z_end}...")
                 stitched_volume, prev_z_slices = stitch_image(
                     patches=mask_patches, 
                     positions=local_positions,
@@ -129,7 +129,7 @@ def disk_manager_worker(
             actual_chunk_depth = res_z_end - res_z_start
             local_positions = [(pos[0] - res_z_start, pos[1], pos[2]) for pos in data_position]
             
-            logging.info(f"  Stitching Z:{res_z_start}-{res_z_end}...")
+            logging.info(f"  Stitching Z: {res_z_start}-{res_z_end}...")
             stitched_volume, _ = stitch_image(
                 patches=mask_patches, 
                 positions=local_positions,

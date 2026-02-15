@@ -4,6 +4,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -83,26 +84,58 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
     @classmethod
     def from_folders(
         cls,
-        image_dir: str,
-        mask_dir: str,
+        image_root: str,
+        mask_root: str,
         patch_size: Tuple[int, int, int],
         overlap: Tuple[int, int, int],
         transform: Optional[Callable] = None,
         neg_keep_ratio: float = 1.0,
+        input_name: str = "Flatten_561",
+        mask_name: str = "Flatten_561_mask"
     ):
         all_image_patches = []
         all_mask_patches = []
         
-        volume_names = sorted([d for d in os.listdir(image_dir) if os.path.isdir(os.path.join(image_dir, d))])
+        image_root_path = Path(image_root)
+        mask_root_path = Path(mask_root)
         
-        for v_name in volume_names:
-            img_path = os.path.join(image_dir, v_name)
-            msk_path = os.path.join(mask_dir, v_name)
+        # We assume image_root and mask_root might be the same or different.
+        # But based on the new structure, we want to find all 'input_name' folders.
+        # We can search under image_root for all 'input_name' directories.
+        
+        volumes_found = []
+        for p in image_root_path.rglob("*"):
+            if p.is_dir() and p.name == input_name:
+                # Find relative path from image_root
+                rel_path = p.parent.relative_to(image_root_path)
+                # Check if mask exists in corresponding position under mask_root
+                m_path = mask_root_path / rel_path / mask_name
+                
+                if m_path.exists() and m_path.is_dir():
+                    volumes_found.append((p, m_path))
+
+        if not volumes_found:
+            # Fallback for old flat structure if no nested volumes found
+            # or if the user passed the direct parent of Flatten_561
+            if image_root_path.name == input_name:
+                m_path = mask_root_path.parent / mask_name
+                if m_path.exists():
+                    volumes_found.append((image_root_path, m_path))
+            else:
+                # Check if image_root contains input_name and mask_name directly
+                p = image_root_path / input_name
+                m = mask_root_path / mask_name
+                if p.exists() and m.exists():
+                    volumes_found.append((p, m))
+
+        for img_path, msk_path in sorted(volumes_found):
+            v_display_name = f"{img_path.parent.name}/{img_path.name}"
             
-            if not os.path.exists(msk_path):
+            img_reader = FileReader(img_path)
+            if img_reader.volume_shape[0] < patch_size[0]:
+                logger.warning(f"Skipping {v_display_name}: Z-size {img_reader.volume_shape[0]} < patch_size {patch_size[0]}")
                 continue
                 
-            img_reader = FileReader(img_path)
             img_data = img_reader.read()
             img_data = (img_data - img_reader.volume_mean) / (img_reader.volume_std + 1e-8)
             
@@ -118,7 +151,7 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             all_image_patches.extend([torch.from_numpy(p).unsqueeze(0) for p in img_p_list])
             all_mask_patches.extend([torch.from_numpy(p).unsqueeze(0) for p in msk_p_list])
             
-            logger.info(f"Volume {v_name}: Extracted {len(filtered)} patches.")
+            logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches.")
             
         if not all_image_patches:
             raise RuntimeError(f"No valid patches were extracted from {image_dir}")
@@ -222,11 +255,12 @@ def load_train_dataset_from_config(
     """
     Initializes and splits a training dataset based on the provided configuration dictionary.
     """
-    img_root = config.get("img_path")
-    mask_root = config.get("mask_path")
+    data_root = config.get("data_path")
+    img_root = config.get("img_path", data_root)
+    mask_root = config.get("mask_path", data_root)
     
     if not img_root or not mask_root:
-        raise ValueError("Missing 'img_path' or 'mask_path' in training config.")
+        raise ValueError("Missing 'data_path' (or 'img_path'/'mask_path') in training config.")
 
     patch_size = tuple(config.get("training_patch_size", [1, 64, 64]))
     overlap = tuple(config.get("training_overlay", [0, 0, 0]))
@@ -236,11 +270,13 @@ def load_train_dataset_from_config(
 
     logger.info(f"Loading training data from {img_root}...")
     full_dataset = TrainMicroscopyDataset.from_folders(
-        image_dir=img_root,
-        mask_dir=mask_root,
+        image_root=img_root,
+        mask_root=mask_root,
         patch_size=patch_size,
         overlap=overlap,
-        neg_keep_ratio=neg_ratio
+        neg_keep_ratio=neg_ratio,
+        input_name=config.get("input_name", "Flatten_561"),
+        mask_name=config.get("mask_name", "Flatten_561_mask")
     )
 
     return full_dataset.split(

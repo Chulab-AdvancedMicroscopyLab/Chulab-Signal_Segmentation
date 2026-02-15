@@ -9,8 +9,7 @@
         "out_channels": 1
     },
     "train": {
-        "img_path": "./datas/c-Fos/LI-WIN_PAPER/training-data/LI-AN-3D/Flatten_561",
-        "mask_path": "./datas/c-Fos/LI-WIN_PAPER/training-data/LI-AN-3D/Flatten_561_mask",
+        "data_path": "./datas/c-Fos/LI-WIN_PAPER/training-data/LI-AN-3D",
         "save_path": "./output/c-Fos/LI-WIN_PAPER",
         "model_name": "test_v1",
         "training_epochs": 200,
@@ -20,7 +19,7 @@
         "training_overlay": [2, 8, 8],
         "training_resize_factor": [1.0, 1.0, 1.0],
         "training_neg_keep_ratio": 0.1,
-        "learning_rate": 2e-4,
+        "learning_rate": 1e-4,
         "weight_decay": 1e-5,
         "visualize_preview": true
     },
@@ -28,8 +27,8 @@
         "input_path": "./datas/c-Fos/LI-WIN_PAPER/testing-data/V60",
         "output_path": "./datas/c-Fos/LI-WIN_PAPER/testing-data/V60",
         "input_name": "Flatten_561",
-        "output_name": "Flatten_561_test_v1_mask",
-        "model_path": "./output/c-Fos/LI-WIN_PAPER/test_v1/weights/test_v1.pth",
+        "output_name": "Flatten_561_test_v0_mask",
+        "model_path": "./output/c-Fos/LI-WIN_PAPER/test_v0/weights/test_v0.pth",
         "batch_size": 16,
         "num_workers": 4,
         "inference_patch_size": [16, 64, 64],
