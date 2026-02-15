@@ -189,11 +189,13 @@ def main():
     config = full_config.get("train", {})
     model_config = full_config.get("model", {})
     
-    img_root, mask_root, save_root = config.get("img_path"), config.get("mask_path"), config.get("save_path")
+    img_root, mask_root = config.get("img_path"), config.get("mask_path")
+    data_root = config.get("data_path")
+    save_root = config.get("save_path")
     model_name = config.get("model_name", "best_model")
     
-    if not all([img_root, mask_root, save_root]):
-        logging.error("Missing mandatory paths in config."); return 1
+    if not (data_root or (img_root and mask_root)) or not save_root:
+        logging.error("Missing mandatory paths (data_path or img/mask_path) in config."); return 1
         
     # Paths setup
     model_save_path = os.path.join(save_root, model_name)
