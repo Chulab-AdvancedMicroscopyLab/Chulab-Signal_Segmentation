@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-from typing import List, Tuple, Optional, Union
+from typing import Optional
 
 def _draw_grid(
     images: np.ndarray,
