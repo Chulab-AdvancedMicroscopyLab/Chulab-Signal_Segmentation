@@ -1,0 +1,14 @@
+__pycache__/
+*.log
+*.pyc
+*.tiff
+*.tif
+*.gz
+*.pth
+*.png
+*.csv
+*.xlsx
+.env
+.devcontainer/
+docker-compose.yml
+/output

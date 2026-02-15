@@ -1,0 +1,14 @@
+numba
+openpyxl
+zarr
+dask
+imagecodecs
+nibabel
+tqdm
+matplotlib
+monai
+scikit-learn
+scikit-image
+torch --index-url https://download.pytorch.org/whl/cu126
+torchvision --index-url https://download.pytorch.org/whl/cu126
+torchaudio --index-url https://download.pytorch.org/whl/cu126
