@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from dataclasses import dataclass
 
 @dataclass(frozen=True)

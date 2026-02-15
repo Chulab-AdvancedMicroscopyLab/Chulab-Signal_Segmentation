@@ -13,7 +13,6 @@ Requires Docker Desktop/Engine and Docker Compose v2 ("docker compose") or v1 ("
 """
 from __future__ import annotations
 
-import os
 import shutil
 import signal
 import subprocess

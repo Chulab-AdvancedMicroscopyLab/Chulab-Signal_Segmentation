@@ -6,7 +6,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 import argparse
 import os
-import sys
 import torch
 import torch.optim as optim
 import json

@@ -11,13 +11,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 import argparse
 import os
-import sys
 import json
 import threading
 import queue
 import numpy as np
 from pathlib import Path
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 from tqdm import tqdm
 
 import torch
