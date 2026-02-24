@@ -255,7 +255,7 @@ def main():
         num_res_units=model_config.get("num_res_units", 2),
         dropout=model_config.get("dropout", 0.1)
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device)
 
     # Note: If loading an existing model for fine-tuning, you would use load_checkpoint(path) here.

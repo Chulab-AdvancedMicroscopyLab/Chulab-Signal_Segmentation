@@ -17,7 +17,6 @@ import queue
 import numpy as np
 from pathlib import Path
 from typing import Tuple, List
-from tqdm import tqdm
 
 import torch
 from monai.data.dataloader import DataLoader
@@ -222,7 +221,7 @@ def main():
     root_input = Path(input_path_str).resolve()
     root_output = Path(output_path_str).resolve()
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     logging.info(f"Loading model: {model_path}")
     model = load_checkpoint(model_path).to(device)
     
