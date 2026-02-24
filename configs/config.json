@@ -9,6 +9,7 @@
         "out_channels": 1
     },
     "train": {
+        "device": "cuda:0",
         "data_path": "./datas/c-Fos/LI-WIN_PAPER/training-data/LI-AN-3D",
         "save_path": "./output/c-Fos/LI-WIN_PAPER",
         "model_name": "test_v1",
@@ -24,6 +25,7 @@
         "visualize_preview": true
     },
     "inference": {
+        "device": "cuda:0",
         "input_path": "./datas/c-Fos/LI-WIN_PAPER/testing-data/V60",
         "output_path": "./datas/c-Fos/LI-WIN_PAPER/testing-data/V60",
         "input_name": "Flatten_561",
