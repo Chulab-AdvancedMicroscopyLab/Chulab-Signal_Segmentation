@@ -140,7 +140,7 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches.")
             
         if not all_image_patches:
-            raise RuntimeError(f"No valid patches were extracted from {image_dir}")
+            raise RuntimeError(f"No valid patches were extracted from {img_path}")
 
         image_stack = torch.stack(all_image_patches).share_memory_()
         mask_stack = torch.stack(all_mask_patches).share_memory_()
