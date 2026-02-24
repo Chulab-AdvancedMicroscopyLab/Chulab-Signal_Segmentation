@@ -114,20 +114,6 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
                 if m_path.exists() and m_path.is_dir():
                     volumes_found.append((p, m_path))
 
-        if not volumes_found:
-            # Fallback for old flat structure if no nested volumes found
-            # or if the user passed the direct parent of Flatten_561
-            if image_root_path.name == input_name:
-                m_path = mask_root_path.parent / mask_name
-                if m_path.exists():
-                    volumes_found.append((image_root_path, m_path))
-            else:
-                # Check if image_root contains input_name and mask_name directly
-                p = image_root_path / input_name
-                m = mask_root_path / mask_name
-                if p.exists() and m.exists():
-                    volumes_found.append((p, m))
-
         for img_path, msk_path in sorted(volumes_found):
             v_display_name = f"{img_path.parent.name}/{img_path.name}"
             
