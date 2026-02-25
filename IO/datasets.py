@@ -131,21 +131,23 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             indices = generate_patch_indices(img_data.shape, patch_size, overlap)
             filtered = filter_indices_by_mask(msk_data, indices, neg_keep_ratio)
             
-            img_p_list = extract_data_from_indices(img_data, filtered)
-            msk_p_list = extract_data_from_indices(msk_data, filtered)
+            img_patches = extract_data_from_indices(img_data, filtered, as_stack=True)
+            msk_patches = extract_data_from_indices(msk_data, filtered, as_stack=True)
             
-            all_image_patches.extend([torch.from_numpy(p).unsqueeze(0) for p in img_p_list])
-            all_mask_patches.extend([torch.from_numpy(p).unsqueeze(0) for p in msk_p_list])
+            # Convert to torch and add channel dimension: (N, D, H, W) -> (N, 1, D, H, W)
+            all_image_patches.append(torch.from_numpy(img_patches).unsqueeze(1))
+            all_mask_patches.append(torch.from_numpy(msk_patches).unsqueeze(1))
             
             logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches.")
             
         if not all_image_patches:
-            raise RuntimeError(f"No valid patches were extracted from {img_path}")
+            raise RuntimeError(f"No valid patches were extracted from {image_root}")
 
-        image_stack = torch.stack(all_image_patches).share_memory_()
-        mask_stack = torch.stack(all_mask_patches).share_memory_()
+        image_stack = torch.cat(all_image_patches).share_memory_()
+        mask_stack = torch.cat(all_mask_patches).share_memory_()
         
-        patch_indices = [PatchMetadata(volume_idx=i) for i in range(len(all_image_patches))]
+        # patch_indices should be for the final total number of patches
+        patch_indices = [PatchMetadata(volume_idx=i) for i in range(len(image_stack))]
         
         return cls(
             image_tensors=[image_stack],
@@ -213,16 +215,16 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         raw_indices = generate_patch_indices(img_data.shape, patch_size, overlap, z_offset=z_start)
         
         # 3. Pre-extract all patches (this ensures workers do zero slicing/computation)
-        img_p_list = extract_data_from_indices(img_data, raw_indices)
+        img_patches = extract_data_from_indices(img_data, raw_indices, as_stack=True)
         
         # 4. Pack into a single contiguous shared tensor
         # Shape: (N_patches, 1, D, H, W)
-        image_stack = torch.stack([torch.from_numpy(p).unsqueeze(0) for p in img_p_list]).share_memory_()
+        image_stack = torch.from_numpy(img_patches).unsqueeze(1).share_memory_()
         
         # 5. Map indices to the stack while preserving PatchSlice for stitching
         patch_indices = [
             PatchMetadata(volume_idx=i, slices=raw_indices[i]) 
-            for i in range(len(img_p_list))
+            for i in range(len(raw_indices))
         ]
         
         super().__init__(

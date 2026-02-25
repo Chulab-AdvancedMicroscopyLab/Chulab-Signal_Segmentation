@@ -1,5 +1,6 @@
 import numpy as np
-from typing import List, Tuple
+import numba
+from typing import List, Tuple, Union
 from dataclasses import dataclass
 
 @dataclass(frozen=True)
@@ -9,6 +10,51 @@ class PatchSlice:
     y_slice: slice
     x_slice: slice
     global_coords: Tuple[int, int, int]
+
+@numba.njit(fastmath=True, parallel=True)
+def _numba_check_mask_patches(mask, starts, dims, threshold):
+    """
+    Highly optimized mask check using Numba with parallel execution.
+    Returns a boolean array where True indicates a positive patch.
+    """
+    n = starts.shape[0]
+    is_positive = np.zeros(n, dtype=np.bool_)
+    dz, dy, dx = dims
+    
+    # Iterate over each patch in parallel
+    for i in numba.prange(n):
+        zs, ys, xs = starts[i]
+        
+        found = False
+        for z in range(zs, zs + dz):
+            for y in range(ys, ys + dy):
+                for x in range(xs, xs + dx):
+                    if mask[z, y, x] > threshold:
+                        found = True
+                        break
+                if found: break
+            if found: break
+        is_positive[i] = found
+        
+    return is_positive
+
+@numba.njit(fastmath=True, parallel=True)
+def _numba_extract_patches(array, starts, dims):
+    """
+    Optimized patch extraction using Numba with parallel execution.
+    Returns a single stacked array of shape (N, Z, Y, X).
+    """
+    n = starts.shape[0]
+    dz, dy, dx = dims
+    # Pre-allocate the full stack
+    patches = np.empty((n, dz, dy, dx), dtype=array.dtype)
+    
+    for i in numba.prange(n):
+        zs, ys, xs = starts[i]
+        # Numba handles slicing efficiently
+        patches[i] = array[zs:zs+dz, ys:ys+dy, xs:xs+dx]
+        
+    return patches
 
 def compute_z_plan(volume_depth: int, patch_depth: int, z_overlap: int) -> List[Tuple[int, int]]:
     """
@@ -95,35 +141,89 @@ def filter_indices_by_mask(
 ) -> List[PatchSlice]:
     """
     Filters patch indices based on mask content (positive vs negative sampling).
+    Uses Numba for high-performance mask evaluation.
     """
+    if not indices:
+        return []
+
+    # Extract start coordinates for Numba
+    starts = np.array([
+        [idx.z_slice.start, idx.y_slice.start, idx.x_slice.start] 
+        for idx in indices
+    ], dtype=np.int64)
+    
+    # Extract dimensions (assuming all patches have same size as the first one)
+    # The generate_patch_indices function guarantees this for volumes >= patch_size
+    first = indices[0]
+    dims = np.array([
+        first.z_slice.stop - first.z_slice.start,
+        first.y_slice.stop - first.y_slice.start,
+        first.x_slice.stop - first.x_slice.start
+    ], dtype=np.int64)
+    
+    # Parallelized/Optimized check
+    is_positive = _numba_check_mask_patches(mask, starts, dims, threshold)
+    
     pos_indices = []
     neg_indices = []
     
-    for idx in indices:
-        mask_patch = mask[idx.z_slice, idx.y_slice, idx.x_slice]
-        if np.any(mask_patch > threshold):
-            pos_indices.append(idx)
+    for i in range(len(indices)):
+        if is_positive[i]:
+            pos_indices.append(indices[i])
         else:
-            neg_indices.append(idx)
+            neg_indices.append(indices[i])
             
     n_keep_neg = int(len(pos_indices) * neg_keep_ratio)
     if neg_indices:
-        # Using a fixed seed for reproducible shuffling if needed, or just random
+        # Shuffle negative indices and take a subset
         np.random.shuffle(neg_indices)
         selected_negs = neg_indices[:n_keep_neg]
         result = pos_indices + selected_negs
     else:
         result = pos_indices
         
-    # Shuffle the final combined list so training doesn't see all positives then all negatives
+    # Shuffle the final combined list for training randomization
     np.random.shuffle(result)
     return result
 
 def extract_data_from_indices(
     array: np.ndarray,
-    indices: List[PatchSlice]
-) -> List[np.ndarray]:
+    indices: List[PatchSlice],
+    as_stack: bool = False
+) -> Union[List[np.ndarray], np.ndarray]:
     """
     Extract pixel data from a volume given a list of patch indices.
+    Uses Numba for high-performance extraction.
+    
+    Args:
+        array: Input volume (D, H, W)
+        indices: List of PatchSlice objects
+        as_stack: If True, returns a single numpy array of shape (N, D, H, W).
+                  If False, returns a list of numpy arrays.
     """
-    return [array[idx.z_slice, idx.y_slice, idx.x_slice] for idx in indices]
+    if not indices:
+        if as_stack:
+            return np.empty((0, 0, 0, 0), dtype=array.dtype)
+        return []
+
+    # Prepare metadata for Numba
+    starts = np.array([
+        [idx.z_slice.start, idx.y_slice.start, idx.x_slice.start] 
+        for idx in indices
+    ], dtype=np.int64)
+    
+    first = indices[0]
+    dims = np.array([
+        first.z_slice.stop - first.z_slice.start,
+        first.y_slice.stop - first.y_slice.start,
+        first.x_slice.stop - first.x_slice.start
+    ], dtype=np.int64)
+    
+    # Fast extraction
+    patches = _numba_extract_patches(array, starts, dims)
+    
+    if as_stack:
+        return patches
+    
+    # Default: return list of arrays (views into the stacked array)
+    return [patches[i] for i in range(len(indices))]

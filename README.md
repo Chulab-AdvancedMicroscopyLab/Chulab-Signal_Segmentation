@@ -4,6 +4,7 @@ High-performance 2D/3D microscopy image segmentation using MONAI, PyTorch, and S
 
 ## Features
 
+- **Numba Acceleration:** High-performance JIT-compiled algorithms for 3D patch cropping, mask filtering, and volume stitching.
 - **Shared Memory:** Utilizes `torch.multiprocessing` to prevent RAM duplication across workers, critical for large volumes on Windows.
 - **Asynchronous Pipeline:** Optimized inference using a synchronized Disk Manager thread to maximize sequential I/O speed.
 - **Pre-Packed Patches:** Zero-computation inference workers by pre-cropping patches into shared contiguous tensors.
@@ -22,12 +23,19 @@ High-performance 2D/3D microscopy image segmentation using MONAI, PyTorch, and S
 
 ## Installation
 
-1. Create a Python 3.10+ environment.
-2. Install dependencies:
+1. Create a Python 3.10+ environment (e.g., using Miniconda).
+2. **Install PyTorch** following the official instructions for your platform (CUDA/CPU):
+   [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
+   
+   Example (CUDA 11.8):
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+   ```
+3. Install remaining dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-   *Note: `numba` is required for optimized stitching.*
+   *Note: `numba` is used for high-speed JIT acceleration.*
 
 ## Docker Workflow
 
@@ -44,7 +52,13 @@ datas/
   dataset_name/
     volume_01/
       Flatten_561/      # Raw images
-      Flatten_561_mask/ # Binary masks (for training)
+      Flatten_561_mask/ # Binary masks (detected)
+    volume_02/
+      Flatten_561/      # Raw images
+      Flatten_561_mask/ # Binary masks (detected)
+    volume_02/
+      Flatten_647/      # Raw images
+      Flatten_647_mask/ # Binary masks (ignored)
 ```
 
 ## Training
