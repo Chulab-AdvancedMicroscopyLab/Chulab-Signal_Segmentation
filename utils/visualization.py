@@ -21,6 +21,10 @@ def _draw_grid(
     matplotlib.use("Agg", force=True)
 
     n_samples = min(len(images), max_samples)
+    if n_samples == 0:
+        print(f"Warning: No samples to visualize for {title}")
+        return
+
     rows = int(np.ceil(n_samples / cols))
     
     has_preds = predictions is not None
