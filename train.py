@@ -23,8 +23,8 @@ from monai.transforms.intensity.dictionary import (
 from monai.transforms.post.dictionary import AsDiscreted
 from monai.data.dataloader import DataLoader
 
-from models.factory import get_model
-from IO.datasets import load_train_dataset_from_config
+from IO import load_train_dataset_from_config
+from models import build_model_from_config
 from utils.visualization import visualize_dataset, visualize_predictions
 from utils.metrics import dice_score, bce_score
 from utils.plot import save_learning_curves
@@ -245,16 +245,8 @@ def main():
     
     # Model
     spatial_dims = 3 if config.get("training_patch_size", [1, 64, 64])[0] > 1 else 2
-    model = get_model(
-        model_type=model_config.get("model_type", "monai_unet"),
-        spatial_dims=spatial_dims,
-        in_channels=model_config.get("in_channels", 1),
-        out_channels=model_config.get("out_channels", 1),
-        channels=model_config.get("channels", [32, 64, 128]),
-        strides=model_config.get("strides", [2, 2]),
-        num_res_units=model_config.get("num_res_units", 2),
-        dropout=model_config.get("dropout", 0.1)
-    )
+    model_config["spatial_dims"] = spatial_dims
+    model = build_model_from_config(model_config)
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device)
 

@@ -23,8 +23,7 @@ from monai.data.dataloader import DataLoader
 from monai.transforms.compose import Compose
 from monai.transforms.utility.dictionary import ToTensord
 
-from IO import FileReader, FileWriter, TYPE_MAP
-from IO.datasets import InferenceMicroscopyDataset
+from IO import FileReader, FileWriter, InferenceMicroscopyDataset, TYPE_MAP
 from utils.cropper import compute_z_plan
 from utils.stitcher import stitch_image
 
