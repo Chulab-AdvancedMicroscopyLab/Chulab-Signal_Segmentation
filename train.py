@@ -26,7 +26,7 @@ from monai.data.dataloader import DataLoader
 from IO import load_train_dataset_from_config
 from models import build_model_from_config
 from utils.visualization import visualize_dataset, visualize_predictions
-from utils.metrics import dice_score, bce_score
+from utils.metrics import dice_score, bce_score, hard_dice_score
 from utils.plot import save_learning_curves
 
 # Initialize logging
@@ -35,14 +35,15 @@ logger = logging.getLogger(__name__)
 # Metrics Configuration
 MetricFn = Callable[[torch.Tensor, torch.Tensor], Union[torch.Tensor, float]]
 METRICS_TO_COMPUTE: Dict[str, MetricFn] = {
-    "dice_score": lambda outputs, targets: dice_score(outputs, targets, from_logits=True),
+    "dice_soft": lambda outputs, targets: dice_score(outputs, targets, from_logits=True),
+    "dice_hard": lambda outputs, targets: hard_dice_score(outputs, targets, from_logits=True),
     "bce_score": lambda outputs, targets: bce_score(outputs, targets, from_logits=True),
 }
 
 # Transforms
 train_transform = Compose([
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
-    GaussianSmoothd(keys=["mask"], sigma=0.2),
+    GaussianSmoothd(keys=["mask"], sigma=0.1),
     AsDiscreted(keys=["mask"], threshold=0.5),
     RandFlipd(keys=["image", "mask"], spatial_axis=1, prob=0.5),
     RandAdjustContrastd(keys=["image"], prob=0.3),
@@ -53,13 +54,8 @@ train_transform = Compose([
 
 val_transform = Compose([
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
-    GaussianSmoothd(keys=["mask"], sigma=0.2),
+    GaussianSmoothd(keys=["mask"], sigma=0.1),
     AsDiscreted(keys=["mask"], threshold=0.5),
-    RandFlipd(keys=["image", "mask"], spatial_axis=1, prob=0.5),
-    RandAdjustContrastd(keys=["image"], prob=0.3),
-    RandBiasFieldd(keys=["image"], prob=0.2),
-    RandShiftIntensityd(keys=["image"], offsets=0.2, prob=0.3),
-    RandScaleIntensityd(keys=["image"], factors=0.2, prob=0.3),
 ])
 
 def save_checkpoint(model: torch.nn.Module, weight_path: str, name: str):
@@ -180,7 +176,7 @@ def valid_epoch(
 
 def main():
     parser = argparse.ArgumentParser(description="Train U-Net for Microscopy Segmentation")
-    parser.add_argument("--config", type=str, default="configs/config.json", help="Path to config file")
+    parser.add_argument("--config", type=str, help="Path to config file")
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:

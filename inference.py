@@ -202,7 +202,7 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
 
 def main():
     parser = argparse.ArgumentParser(description="Batch Inference: Synchronized Disk Pipeline")
-    parser.add_argument("--config", type=str, default="configs/config.json", help="Path to config file")
+    parser.add_argument("--config", type=str, help="Path to config file")
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:

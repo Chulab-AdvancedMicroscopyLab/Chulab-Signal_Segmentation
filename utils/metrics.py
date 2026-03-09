@@ -15,6 +15,32 @@ def dice_score(
     dims: tuple = None,
 ) -> torch.Tensor:
     """
+    Computes the Soft Dice Score (differentiable-like).
+    Does NOT threshold at 0.5, giving a smoother metric.
+    """
+    if from_logits:
+        pred = pred.sigmoid()
+    
+    # Use soft probabilities for a more stable metric
+    target = target.float()
+
+    if dims is None:
+        dims = tuple(range(1, pred.dim()))
+
+    intersection = (pred * target).sum(dim=dims)
+    union = pred.sum(dim=dims) + target.sum(dim=dims)
+    
+    dice = (2.0 * intersection + smooth) / (union + smooth)
+    return dice.mean()
+
+def hard_dice_score(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    smooth: float = 1e-5,
+    from_logits: bool = False,
+    dims: tuple = None,
+) -> torch.Tensor:
+    """
     Computes the Hard Dice Score (non-differentiable).
     Thresholds prediction at 0.5 before computing.
     """
@@ -42,14 +68,12 @@ def bce_score(
 ) -> torch.Tensor:
     """
     Binary Cross Entropy Score (Metric Only).
-    Thresholds predictions at 0.5 before calculating BCE.
+    Calculates standard BCE on probabilities.
     """
     if from_logits:
         pred = pred.sigmoid()
     
-    # Binarize
-    pred = (pred > 0.5).float()
-    target = (target > 0.5).float()
+    target = target.float()
     
     # Clamp to avoid log(0)
     eps = 1e-7
