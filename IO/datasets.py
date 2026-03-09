@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Union
 from pathlib import Path
 
 import numpy as np
@@ -84,8 +84,8 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
     @classmethod
     def from_folders(
         cls,
-        image_root: str,
-        mask_root: str,
+        image_root: Union[str, List[str]],
+        mask_root: Union[str, List[str]],
         patch_size: Tuple[int, int, int],
         overlap: Tuple[int, int, int],
         transform: Optional[Callable] = None,
@@ -96,23 +96,29 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         all_image_patches = []
         all_mask_patches = []
         
-        image_root_path = Path(image_root)
-        mask_root_path = Path(mask_root)
+        image_roots = [image_root] if isinstance(image_root, str) else image_root
+        mask_roots = [mask_root] if isinstance(mask_root, str) else mask_root
         
-        # We assume image_root and mask_root might be the same or different.
-        # But based on the new structure, we want to find all 'input_name' folders.
-        # We can search under image_root for all 'input_name' directories.
-        
+        if len(image_roots) != len(mask_roots):
+            if len(mask_roots) == 1:
+                mask_roots = mask_roots * len(image_roots)
+            elif len(image_roots) == 1:
+                image_roots = image_roots * len(mask_roots)
+            else:
+                raise ValueError("image_root and mask_root lists must have the same length.")
+
         volumes_found = []
-        for p in image_root_path.rglob("*"):
-            if p.is_dir() and p.name == input_name:
-                # Find relative path from image_root
-                rel_path = p.parent.relative_to(image_root_path)
-                # Check if mask exists in corresponding position under mask_root
-                m_path = mask_root_path / rel_path / mask_name
-                
-                if m_path.exists() and m_path.is_dir():
-                    volumes_found.append((p, m_path))
+        for img_root, msk_root in zip(image_roots, mask_roots):
+            img_root_path = Path(img_root)
+            msk_root_path = Path(msk_root)
+            
+            for p in img_root_path.rglob("*"):
+                if p.is_dir() and p.name == input_name:
+                    rel_path = p.parent.relative_to(img_root_path)
+                    m_path = msk_root_path / rel_path / mask_name
+                    
+                    if m_path.exists() and m_path.is_dir():
+                        volumes_found.append((p, m_path))
 
         for img_path, msk_path in sorted(volumes_found):
             v_display_name = f"{img_path.parent.name}/{img_path.name}"

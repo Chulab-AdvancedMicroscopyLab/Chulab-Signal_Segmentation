@@ -23,7 +23,7 @@ logging.basicConfig(
 def parse_args():
     """Parse CLI arguments describing the input volume and desired outputs."""
     parser = argparse.ArgumentParser(description="Convert image volume to multiscale OME-Zarr or other formats.")
-    parser.add_argument("--config", type=str, required=True, help="Path to a JSON config file")
+    parser.add_argument("--config", type=str, default="configs/config.json", required=True, help="Path to a JSON config file")
     return parser.parse_args()
 
 def _write_pyramid(reader: FileReader, args, full_res_shape, chunk_tuple, io_output_type: str) -> bool:
