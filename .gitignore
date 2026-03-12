@@ -11,4 +11,5 @@ __pycache__/
 .env
 .devcontainer/
 docker-compose.yml
+/datas
 /output

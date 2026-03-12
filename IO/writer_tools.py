@@ -132,6 +132,7 @@ def resize_xy_block_to_temp(
     chunk_size: tuple[int, int, int] = (128, 128, 128),
     temp_store_path: Path | str | None = None,
     current_shape: tuple[int, int, int] | None = None,
+    max_workers: int = 8,
 ) -> Path:
     """Resize a provided Z-slab block in XY and write to the temp store.
 
@@ -147,6 +148,7 @@ def resize_xy_block_to_temp(
         chunk_size (tuple[int,int,int]): Chunking for temp IO.
         temp_store_path (Path | str | None): Existing temp store path or None.
         current_shape (tuple[int,int,int] | None): Full current shape; required when creating.
+        max_workers (int): Number of workers for the process pool.
 
     Returns:
         Path: Path to the temp store directory.
@@ -157,7 +159,7 @@ def resize_xy_block_to_temp(
     )
 
     z0, z1 = z_range
-    with ProcessPoolExecutor(max_workers=8) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         tasks = [
             (block[i], target_y, target_x, dtype, order)
             for i in range(block.shape[0])
@@ -187,6 +189,7 @@ def resize_xy_volume_to_temp(
     order: int = 1,
     chunk_size: tuple[int, int, int] = (128, 128, 128),
     temp_store_path: Path | str | None = None,
+    max_workers: int = 8,
 ) -> Path:
     """Resize an entire volume in XY, streaming along Z, writing to temp store.
 
@@ -198,6 +201,7 @@ def resize_xy_volume_to_temp(
         order (int): skimage order for interpolation.
         chunk_size (tuple[int,int,int]): Chunking for temp IO.
         temp_store_path (Path | str | None): Optional pre-existing temp store path.
+        max_workers (int): Number of workers for the process pool.
 
     Returns:
         Path: Path to the temp store directory containing the XY-resized data.
@@ -209,7 +213,7 @@ def resize_xy_volume_to_temp(
         temp_store_path, current_shape, target_y, target_x, dtype, chunk_size
     )
 
-    with ProcessPoolExecutor(max_workers=8) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for z0 in range(0, current_z, chunk_size[0]):
             z1 = min(z0 + chunk_size[0], current_z)
             block_chunk = input_source[z0:z1]  # (dz, Y, X)
@@ -291,6 +295,7 @@ def collapse_xz_from_temp(
     *,
     order: int = 1,
     chunk_size: tuple[int, int, int] = (128, 128, 128),
+    max_workers: int = 8,
 ) -> None:
     """Pass 2: collapse XZ strips from temp store into the destination array.
 
@@ -301,13 +306,14 @@ def collapse_xz_from_temp(
         dtype (np.dtype): Output dtype.
         order (int): skimage order for interpolation.
         chunk_size (tuple[int,int,int]): Chunking used for IO.
+        max_workers (int): Number of workers for the process pool.
     """
     target_z, target_y, target_x = target_shape
 
     temp_store = zarr.DirectoryStore(Path(temp_store_path))
     temp_arr = zarr.open_array(store=temp_store, mode='r')
 
-    with ProcessPoolExecutor(max_workers=8) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for y0 in range(0, target_y, chunk_size[1]):
             y1 = min(y0 + chunk_size[1], target_y)
             logger.info(f"Reading volume from temp y: {y0} - {y1}")

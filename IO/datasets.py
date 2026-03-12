@@ -91,7 +91,8 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         transform: Optional[Callable] = None,
         neg_keep_ratio: float = 1.0,
         input_name: str = "Flatten_561",
-        mask_name: str = "Flatten_561_mask"
+        mask_name: str = "Flatten_561_mask",
+        io_workers: int = 4
     ):
         all_image_patches = []
         all_mask_patches = []
@@ -117,7 +118,7 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         for img_path, msk_path in sorted(volumes_found):
             v_display_name = f"{img_path.parent.name}/{img_path.name}"
             
-            img_reader = FileReader(img_path)
+            img_reader = FileReader(img_path, io_workers=io_workers)
             if img_reader.volume_shape[0] < patch_size[0]:
                 logger.warning(f"Skipping {v_display_name}: Z-size {img_reader.volume_shape[0]} < patch_size {patch_size[0]}")
                 continue
@@ -125,7 +126,7 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             img_data = img_reader.read()
             img_data = (img_data - img_reader.volume_mean) / (img_reader.volume_std + 1e-8)
             
-            msk_reader = FileReader(msk_path)
+            msk_reader = FileReader(msk_path, io_workers=io_workers)
             msk_data = msk_reader.read().astype(np.float32)
             
             indices = generate_patch_indices(img_data.shape, patch_size, overlap)
@@ -236,13 +237,17 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         )
 
 def load_train_dataset_from_config(
-    config: dict, 
+    full_config: dict, 
     train_transform: Optional[Callable] = None, 
     val_transform: Optional[Callable] = None
 ) -> Tuple[TrainMicroscopyDataset, TrainMicroscopyDataset]:
     """
     Initializes and splits a training dataset based on the provided configuration dictionary.
     """
+    config = full_config.get("train", {})
+    resources = full_config.get("resources", {})
+    io_workers = resources.get("io_workers", 4)
+    
     data_root = config.get("data_path")
     img_root = config.get("img_path", data_root)
     mask_root = config.get("mask_path", data_root)
@@ -264,7 +269,8 @@ def load_train_dataset_from_config(
         overlap=overlap,
         neg_keep_ratio=neg_ratio,
         input_name=config.get("input_name", "Flatten_561"),
-        mask_name=config.get("mask_name", "Flatten_561_mask")
+        mask_name=config.get("mask_name", "Flatten_561_mask"),
+        io_workers=io_workers
     )
 
     return full_dataset.split(

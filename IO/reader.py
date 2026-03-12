@@ -111,10 +111,11 @@ class FileReader:
         volume_cumulative_z (list[int]): Cumulative Z extents for each file.
     """
 
-    def __init__(self, input_path, transpose_order=None, memory_limit_gb=32):
+    def __init__(self, input_path, transpose_order=None, memory_limit_gb=32, io_workers=4):
         self.input_path = Path(input_path)
         self.transpose_order = _normalize_transpose_order(transpose_order)
         self.memory_limit_bytes = memory_limit_gb * 1024 ** 3
+        self.io_workers = io_workers
 
         logger.info(f"Initializing FileReader with path: {self.input_path}")
 
@@ -197,8 +198,6 @@ class FileReader:
             )
             # slice out only [file_z0:file_z1, y0:y1, x0:x1]
             slab = arr[file_z0:file_z1, y0:y1, x0:x1]
-            if self.transpose_order is not None and self.volume_types[idx] == ".zarr":
-                slab = np.transpose(slab, self.transpose_order)
             out[offset:offset+length, :, :] = slab
 
             # drop references immediately
@@ -316,7 +315,7 @@ class FileReader:
                 std=float(std)
             )
 
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=self.io_workers) as executor:
             future_to_idx = {
                 executor.submit(process, file, suffix): i
                 for i, (file, suffix) in enumerate(zip(self.volume_files, self.volume_types))

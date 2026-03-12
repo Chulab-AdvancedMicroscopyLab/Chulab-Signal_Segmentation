@@ -1,4 +1,9 @@
 {
+    "resources": {
+        "numba_threads": 8,
+        "dask_threads": 4,
+        "io_workers": 4
+    },
     "model": {
         "model_type": "monai_unet",
         "channels": [32, 64, 128, 256],
@@ -26,8 +31,8 @@
     },
     "inference": {
         "device": "cuda:0",
-        "input_path": "./datas/c-Fos/LI-WIN_PAPER/testing-data/V60",
-        "output_path": "./datas/c-Fos/LI-WIN_PAPER/testing-data/V60",
+        "input_path": "./datas/c-Fos/20240414_YYC/testing-data",
+        "output_path": "./datas/c-Fos/20240414_YYC/testing-data",
         "input_name": "Flatten_561",
         "output_name": "Flatten_561_test_v0_mask",
         "model_path": "./output/c-Fos/LI-WIN_PAPER/test_v0/weights/test_v0.pth",
@@ -37,7 +42,7 @@
         "inference_overlay": [2, 8, 8],
         "inference_resize_factor": [1.0, 1.0, 1.0],
         "inference_resize_order": 0,
-        "output_type": "Scroll-Tif",
+        "output_type": "Zarr",
         "output_dtype": "uint16",
         "output_chunk_size": [128, 128, 128],
         "output_resize_factor": 2,

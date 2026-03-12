@@ -5,6 +5,8 @@ to Z, Y, X order, or metadata tuples describing shape, dtype, and size.
 """
 import logging
 import numpy as np
+import dask.array as da
+import zarr
 from pathlib import Path
 
 # Initialize logging
@@ -139,19 +141,33 @@ def _reader_nii_gz(path: Path, read_to_array: bool = True, transpose_order: tupl
 
 
 def _reader_zarr(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None):
-    """Open a Zarr store and either return the array or its metadata."""
-    import zarr
+    """Open a Zarr store and either return the dask array or its metadata."""
     
-    arr = zarr.open(str(path), mode='r')
+    # Open the Zarr store. It could be an array or a group.
+    store = zarr.open(str(path), mode='r')
     
-    # If read_to_array is True, return the array
+    if isinstance(store, zarr.hierarchy.Group):
+        # For OME-Zarr, we usually want level '0' (highest resolution)
+        if '0' in store:
+            arr = da.from_zarr(store.store, component='0')
+        else:
+            # Fallback to the first available array
+            keys = list(store.array_keys())
+            if not keys:
+                raise ValueError(f"Zarr group at {path} contains no arrays.")
+            arr = da.from_zarr(store.store, component=keys[0])
+    else:
+        # It's already a zarr array
+        arr = da.from_zarr(str(path))
+    
     if read_to_array:
-        return arr
+        return _apply_transpose(arr, transpose_order)
     
     # metadata‐only
     shape, dtype = tuple(arr.shape), arr.dtype
     shape = _apply_shape_order(shape, transpose_order)
-    return shape, dtype, 0
+    size_gb = _estimate_size_gb(shape, dtype)
+    return shape, dtype, size_gb
 
 
 def _reader_imageio(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None):

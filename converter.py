@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from IO import FileReader, FileWriter, TYPE_MAP
+from utils.concurrency import initialize_concurrency
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +27,7 @@ def parse_args():
     parser.add_argument("--config", type=str, required=True, help="Path to a JSON config file")
     return parser.parse_args()
 
-def _write_pyramid(reader: FileReader, args, full_res_shape, chunk_tuple, io_output_type: str) -> bool:
+def _write_pyramid(reader: FileReader, args, full_res_shape, chunk_tuple, io_output_type: str, io_workers: int = 4) -> bool:
     """Stream the full-resolution volume into a multiscale Zarr layout."""
     writer = FileWriter(
         output_path=args.output_path,
@@ -39,6 +40,7 @@ def _write_pyramid(reader: FileReader, args, full_res_shape, chunk_tuple, io_out
         resize_factor=args.downscale_factor,
         resize_order=args.resize_order,
         input_shape=tuple(reader.volume_shape),
+        io_workers=io_workers,
     )
 
     z_max = reader.volume_shape[0]
@@ -58,7 +60,7 @@ def _write_pyramid(reader: FileReader, args, full_res_shape, chunk_tuple, io_out
 
     return True
 
-def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_type: str) -> bool:
+def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_type: str, io_workers: int = 4) -> bool:
     """Write a single full-resolution output volume for TIFF or NIfTI targets."""
     if tuple(full_res_shape) != tuple(reader.volume_shape):
         logging.error("resize-shape currently not supported for single outputs. Use input shape.")
@@ -71,6 +73,7 @@ def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_typ
         full_res_shape=tuple(full_res_shape),
         output_dtype=reader.volume_dtype,
         input_shape=tuple(reader.volume_shape),
+        io_workers=io_workers,
     )
 
     arr = reader.read(z_start=0, z_end=reader.volume_shape[0])
@@ -78,7 +81,7 @@ def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_typ
     del arr
     return True
 
-def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_type: str) -> bool:
+def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_type: str, io_workers: int = 4) -> bool:
     """Emit individual 2D slices along the selected axis for scroll outputs."""
     if tuple(full_res_shape) != tuple(reader.volume_shape):
         logging.error("resize-shape currently not supported for scroll outputs. Use input shape.")
@@ -99,6 +102,7 @@ def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_typ
         output_dtype=reader.volume_dtype,
         file_name=file_names,
         input_shape=tuple(reader.volume_shape),
+        io_workers=io_workers,
     )
 
     axis_length = reader.volume_shape[axis]
@@ -124,7 +128,11 @@ def main():
     args = parse_args()
 
     with open(args.config, 'r') as f:
-        config = json.load(f).get("converter", {})
+        full_config = json.load(f)
+        config = full_config.get("converter", {})
+    
+    # Initialize concurrency settings
+    initialize_concurrency(full_config)
 
     input_path = config.get("input_path")
     output_path = config.get("output_path")
@@ -140,11 +148,14 @@ def main():
 
     memory_limit = config.get("memory_limit", 64)
     transpose = config.get("transpose")
+    resources = full_config.get("resources", {})
+    io_workers = resources.get("io_workers", 4)
     
     reader = FileReader(
         input_path=input_path,
         memory_limit_gb=memory_limit,
         transpose_order=tuple(transpose) if transpose else None,
+        io_workers=io_workers,
     )
 
     resize_shape = config.get("resize_shape")
@@ -174,11 +185,11 @@ def main():
     )
 
     if io_output_type in ["ome-zarr", "zarr"]:
-        _write_pyramid(reader, helper_args, full_res_shape, chunk_tuple, io_output_type)
+        _write_pyramid(reader, helper_args, full_res_shape, chunk_tuple, io_output_type, io_workers=io_workers)
     elif io_output_type in ["single-tiff", "single-nii"]:
-        _write_single_volume(reader, helper_args, full_res_shape, io_output_type)
+        _write_single_volume(reader, helper_args, full_res_shape, io_output_type, io_workers=io_workers)
     elif io_output_type in ["scroll-tiff", "scroll-nii"]:
-        _write_scroll_slices(reader, helper_args, full_res_shape, io_output_type)
+        _write_scroll_slices(reader, helper_args, full_res_shape, io_output_type, io_workers=io_workers)
     else:
         logging.error(f"Unsupported output_type: {output_type_str}")
         return
