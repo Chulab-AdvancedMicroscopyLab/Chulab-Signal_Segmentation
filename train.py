@@ -28,6 +28,7 @@ from models import build_model_from_config
 from utils.visualization import visualize_dataset, visualize_predictions
 from utils.metrics import dice_score, bce_score, hard_dice_score
 from utils.plot import save_learning_curves
+from utils.concurrency import initialize_concurrency
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -181,6 +182,9 @@ def main():
 
     with open(args.config, 'r') as f:
         full_config = json.load(f)
+    
+    # Initialize concurrency settings
+    initialize_concurrency(full_config)
         
     config = full_config.get("train", {})
     model_config = full_config.get("model", {})
@@ -216,7 +220,7 @@ def main():
             shutil.copy2(model_src, os.path.join(artifact_path, "UNet.py"))
 
     # Dataset & Dataloaders
-    train_ds, val_ds = load_train_dataset_from_config(config, train_transform, val_transform)
+    train_ds, val_ds = load_train_dataset_from_config(full_config, train_transform, val_transform)
     
     if config.get("visualize_preview", False):
         visualize_dataset(train_ds, title="train_samples_preview", save_path=viz_path)

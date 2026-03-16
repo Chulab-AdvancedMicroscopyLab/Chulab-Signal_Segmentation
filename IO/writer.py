@@ -43,6 +43,7 @@ class FileWriter:
         resize_factor=2,
         resize_order=0,
         input_shape=None,
+        io_workers=4,
     ):
         """Create and initialize a writer for the desired output.
 
@@ -61,6 +62,7 @@ class FileWriter:
             input_shape (tuple[int,int,int] | None): Source shape; if it differs
                 from ``full_res_shape`` and the output is a Zarr target, a two-pass
                 resize pipeline is enabled.
+            io_workers (int): Number of workers to use for processing tasks.
         """
         self.output_path = Path(output_path)
         self.output_name = output_name
@@ -73,6 +75,7 @@ class FileWriter:
         self.resize_order = int(resize_order)
         self.resize_factor = int(resize_factor)
         self.n_level = int(n_level)
+        self.io_workers = int(io_workers)
         
         logger.info(f"Initialized FileWriter with output: {self.output_path}")
         
@@ -124,6 +127,7 @@ class FileWriter:
                 order=self.resize_order,
                 chunk_size=self.chunk_size,
                 temp_store_path=self._resize_temp_path,
+                max_workers=self.io_workers,
             )
             # Store the path on first use for subsequent blocks
             if self._resize_temp_path is None:
@@ -160,6 +164,7 @@ class FileWriter:
             dtype=self.output_dtype,
             order=self.resize_order,
             chunk_size=self.chunk_size,
+            max_workers=self.io_workers,
         )
         self._resize_temp_path = None
     
@@ -188,6 +193,7 @@ class FileWriter:
                 dtype=self.output_dtype,
                 order=self.resize_order,
                 chunk_size=self.chunk_size,
+                max_workers=self.io_workers,
             )
 
             collapse_xz_from_temp(
@@ -197,6 +203,7 @@ class FileWriter:
                 dtype=self.output_dtype,
                 order=self.resize_order,
                 chunk_size=self.chunk_size,
+                max_workers=self.io_workers,
             )
 
         self.store_group.attrs['multiscales'] = self._ome_metadata()

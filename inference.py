@@ -26,6 +26,7 @@ from monai.transforms.utility.dictionary import ToTensord
 from IO import FileReader, FileWriter, InferenceMicroscopyDataset, TYPE_MAP
 from utils.cropper import compute_z_plan
 from utils.stitcher import stitch_image
+from utils.concurrency import initialize_concurrency
 
 # Standard transform
 inference_transform = Compose([
@@ -151,9 +152,13 @@ def disk_manager_worker(
     finally:
         inf_queue.put(None)
 
-def process_volume(volume_path: Path, output_dir: Path, output_name: str, model: torch.nn.Module, device: torch.device, config: dict):
+def process_volume(volume_path: Path, output_dir: Path, output_name: str, model: torch.nn.Module, device: torch.device, full_config: dict):
     """Processes a volume using sequential loading/inference and async stitching."""
-    data_reader = FileReader(volume_path)
+    config = full_config.get("inference", {})
+    resources = full_config.get("resources", {})
+    io_workers = resources.get("io_workers", 4)
+
+    data_reader = FileReader(volume_path, io_workers=io_workers)
     os.makedirs(output_dir, exist_ok=True)
     
     output_type_str = config.get("output_type", "Scroll-Tif")
@@ -165,6 +170,7 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
         full_res_shape=data_reader.volume_shape, file_name=data_reader.volume_files,
         chunk_size=tuple(config.get("output_chunk_size", [128, 128, 128])),
         resize_factor=config.get("output_resize_factor", 2),
+        io_workers=io_workers,
     )
     
     patch_size = tuple(config.get("inference_patch_size", [16, 64, 64]))
@@ -190,7 +196,7 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
         if inf_data is None: break
             
         dataset, z_start, z_end, z_overlay_actual = inf_data
-        loader = DataLoader(dataset, batch_size=config.get("batch_size", 8), shuffle=False, num_workers=config.get("num_workers", 4))
+        loader = DataLoader(dataset, batch_size=config.get("batch_size", 8), shuffle=False, num_workers=0)
         
         logging.info(f"  Inference Z:{z_start}-{z_end}")
         mask_patches = run_inference(model, loader, device)
@@ -206,7 +212,11 @@ def main():
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
-        config = json.load(f).get("inference", {})
+        full_config = json.load(f)
+        config = full_config.get("inference", {})
+    
+    # Initialize concurrency settings
+    initialize_concurrency(full_config)
     
     input_path_str = config.get("input_path")
     output_path_str = config.get("output_path", input_path_str)
@@ -241,7 +251,7 @@ def main():
     for v_path in sorted(volumes_to_process):
         rel_parent = v_path.parent.relative_to(root_input)
         target_output_dir = root_output / rel_parent
-        process_volume(v_path, target_output_dir, output_name, model, device, config)
+        process_volume(v_path, target_output_dir, output_name, model, device, full_config)
 
     logging.info("Batch inference complete.")
 

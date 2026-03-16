@@ -1,4 +1,9 @@
 {
+    "resources": {
+        "numba_threads": 8,
+        "dask_threads": 4,
+        "io_workers": 4
+    },
     "model": {
         "model_type": "monai_unet",
         "channels": [32, 64, 128, 256],
@@ -29,18 +34,18 @@
     },
     "inference": {
         "device": "cuda:1",
-        "input_path": "/mnt/DAS218T/Ian_Huang/project_20260119/20260119_11_37_12_Shaun_BV_ctrl_1_TH_561_cFOS_640_4x_z4_Destripe_DONE",
-        "output_path": "/mnt/DAS218T/Ian_Huang/project_20260119/20260119_11_37_12_Shaun_BV_ctrl_1_TH_561_cFOS_640_4x_z4_Destripe_DONE",
-        "input_name": "Ch1_640",
-        "output_name": "Ch1_640_test_v0_mask",
-        "model_path": "./output/c-Fos/LI-WIN_PAPER/test_v0/weights/test_v0.pth",
+        "input_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor",
+        "output_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor",
+        "input_name": "All_Channels",
+        "output_name": "All_Channels_test_v1_mask",
+        "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/green_computing/test_v1/weights/test_v1.pth",
         "batch_size": 16,
         "num_workers": 4,
         "inference_patch_size": [16, 64, 64],
         "inference_overlay": [2, 8, 8],
         "inference_resize_factor": [1.0, 1.0, 1.0],
         "inference_resize_order": 0,
-        "output_type": "Scroll-Tif",
+        "output_type": "Zarr",
         "output_dtype": "uint16",
         "output_chunk_size": [128, 128, 128],
         "output_resize_factor": 2,
