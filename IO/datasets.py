@@ -214,9 +214,8 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         transform: Optional[Callable] = None,
     ):
         z_start, z_end = z_range
-        # 1. Read and Normalize the full window once
+        # 1. Read the full window
         img_data = image_reader.read(z_start=z_start, z_end=z_end)
-        img_data = (img_data - image_reader.volume_mean) / (image_reader.volume_std + 1e-8)
         
         # 2. Generate geometry
         raw_indices = generate_patch_indices(img_data.shape, patch_size, overlap, z_offset=z_start)
