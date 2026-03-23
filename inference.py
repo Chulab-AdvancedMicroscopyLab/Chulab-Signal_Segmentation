@@ -196,7 +196,9 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
         if inf_data is None: break
             
         dataset, z_start, z_end, z_overlay_actual = inf_data
-        loader = DataLoader(dataset, batch_size=config.get("batch_size", 8), shuffle=False, num_workers=config.get("num_workers", 4))
+        # Use num_workers=0 because patches are already pre-extracted into a shared memory tensor.
+        # This avoids the overhead of spawning/forking processes in every loop iteration.
+        loader = DataLoader(dataset, batch_size=config.get("batch_size", 8), shuffle=False, num_workers=0)
         
         logging.info(f"  Inference Z:{z_start}-{z_end}")
         mask_patches = run_inference(model, loader, device)

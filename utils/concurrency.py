@@ -1,6 +1,8 @@
 import os
 import logging
 import numba
+import multiprocessing
+import platform
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,15 @@ def initialize_concurrency(config: dict):
     # Since they are sequential, we can afford to let them use more threads,
     # but we cap them to avoid over-subscription if other processes are running.
     blas_threads = max(numba_threads, dask_threads)
+
+    # Set Multiprocessing Start Method
+    # 'spawn' is safer on Linux when threads are present, avoiding 'cannot join threads' fork errors.
+    if platform.system() != 'Windows':
+        try:
+            multiprocessing.set_start_method('spawn', force=True)
+            logger.info("Multiprocessing start method set to 'spawn'")
+        except Exception as e:
+            logger.warning(f"Could not set multiprocessing start method: {e}")
 
     # Set Numba threads
     # Note: Numba's thread count can only be set before any JIT functions are called
