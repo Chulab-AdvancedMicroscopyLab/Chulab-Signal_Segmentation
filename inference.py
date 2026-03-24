@@ -21,6 +21,7 @@ from typing import Tuple, List
 import torch
 from monai.data.dataloader import DataLoader
 from monai.transforms.compose import Compose
+from monai.transforms.intensity.dictionary import NormalizeIntensityd
 from monai.transforms.utility.dictionary import ToTensord
 
 from IO import FileReader, FileWriter, InferenceMicroscopyDataset, TYPE_MAP
@@ -30,6 +31,7 @@ from utils.concurrency import initialize_concurrency
 
 # Standard transform
 inference_transform = Compose([
+    NormalizeIntensityd(keys=["image"], dtype=torch.float32),
     ToTensord(keys=["image"], dtype=torch.float32),
 ])
 
