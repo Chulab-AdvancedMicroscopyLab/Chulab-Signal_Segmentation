@@ -20,19 +20,6 @@ from .IO_types import VALID_SUFFIXES, VolumeMetadata
 # Initialize logging
 logger = logging.getLogger(__name__)
 
-
-def _normalize_transpose_order(transpose_order: tuple[int, ...] | list[int] | None) -> tuple[int, ...] | None:
-    """Validate and normalize a transpose tuple into a consistent form."""
-    if transpose_order is None:
-        return None
-    order_tuple = tuple(int(axis) for axis in transpose_order)
-    if len(order_tuple) != 3:
-        raise ValueError("transpose_order must contain exactly three axes for (Z, Y, X)")
-    if sorted(order_tuple) != [0, 1, 2]:
-        raise ValueError("transpose_order must be a permutation of 0, 1, 2")
-    return order_tuple
-
-
 def _detect_suffix(path: Path) -> str:
     """Return a normalized suffix string for the given input path."""
     suffixes = [s.lower() for s in path.suffixes]
@@ -111,9 +98,8 @@ class FileReader:
         volume_cumulative_z (list[int]): Cumulative Z extents for each file.
     """
 
-    def __init__(self, input_path, transpose_order=None, memory_limit_gb=32, io_workers=4):
+    def __init__(self, input_path, memory_limit_gb=32, io_workers=4):
         self.input_path = Path(input_path)
-        self.transpose_order = _normalize_transpose_order(transpose_order)
         self.memory_limit_bytes = memory_limit_gb * 1024 ** 3
         self.io_workers = io_workers
 
@@ -178,31 +164,56 @@ class FileReader:
         # 3) memory check
         mem_limit = self.memory_limit_bytes / (1024**3)
         total_to_load = sum(self.volume_sizes[i] for i in needed_indices)
-        if total_to_load * 2 > mem_limit:
+        is_zarr = len(self.volume_types) > 0 and self.volume_types[0] == '.zarr'
+        
+        if (total_to_load * 2 > mem_limit) and not is_zarr:
             raise MemoryError(f"Need {total_to_load*2:.2f}GiB but limit is {mem_limit:.2f}GiB")
 
         # 4) pre-allocate output
         out = np.empty((dz, dy, dx), dtype=self.volume_dtype)
 
-        # 5) stream each file
-        offset = 0
-        for idx, base, file_z0, file_z1 in needed:
-            length = file_z1 - file_z0
+        # 5) stream files (Sequential for Zarr, Multithreaded for others)
+        if is_zarr:
+            # Sequential loading for Zarr
+            offset = 0
+            for idx, _, file_z0, file_z1 in needed:
+                length = file_z1 - file_z0
+                arr = read_image(
+                    self.volume_files[idx],
+                    self.volume_types[idx],
+                    True
+                )
+                slab = arr[file_z0:file_z1, y0:y1, x0:x1]
+                out[offset:offset+length, :, :] = slab
+                del arr, slab
+                offset += length
+        else:
+            # Multithreaded loading for standard files (TIFF, PNG, etc.)
+            def _load_slice(idx, f_z0, f_z1, out_offset, length):
+                arr = read_image(
+                    self.volume_files[idx],
+                    self.volume_types[idx],
+                    True
+                )
+                out[out_offset:out_offset+length, :, :] = arr[f_z0:f_z1, y0:y1, x0:x1]
+                # arr is garbage collected here naturally
 
-            # load just this file (can use mmap for npy, nibabel, etc)
-            arr = read_image(
-                self.volume_files[idx],
-                self.volume_types[idx],
-                True,
-                self.transpose_order
-            )
-            # slice out only [file_z0:file_z1, y0:y1, x0:x1]
-            slab = arr[file_z0:file_z1, y0:y1, x0:x1]
-            out[offset:offset+length, :, :] = slab
-
-            # drop references immediately
-            del arr, slab
-            offset += length
+            with ThreadPoolExecutor(max_workers=self.io_workers) as executor:
+                futures = []
+                offset = 0
+                for idx, _, file_z0, file_z1 in needed:
+                    length = file_z1 - file_z0
+                    futures.append(
+                        executor.submit(_load_slice, idx, file_z0, file_z1, offset, length)
+                    )
+                    offset += length
+                
+                # Wait for all threads to finish and catch any exceptions
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        raise RuntimeError(f"Error loading volume data: {e}")
 
         return out
     
@@ -303,8 +314,7 @@ class FileReader:
             shape, dtype, size, mean, std = read_image(
                 file,
                 suffix,
-                read_to_array=False,
-                transpose_order=self.transpose_order,
+                read_to_array=False
             )
             shape_zyx = tuple(int(dim) for dim in shape)  # normalize to ints
             return VolumeMetadata(

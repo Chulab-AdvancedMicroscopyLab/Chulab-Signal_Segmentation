@@ -1,8 +1,8 @@
 {
     "resources": {
         "numba_threads": 8,
-        "dask_threads": 4,
-        "io_workers": 4,
+        "dask_threads": 8,
+        "io_workers": 8,
         "memory_limit": 64
     },
     "model": {
@@ -54,22 +54,34 @@
     },
     "converter": [
         {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_48/Ex_561_Em_600_stitched",
-            "output_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_48",
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_53/Ex_647_Em_690_stitched",
+            "output_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_53",
             "output_type": "Zarr",
+            "scroll_axis": 4,
             "chunk_size": 128,
             "downscale_factor": 2,
             "levels": 5,
-            "resize_order": 0
+            "resize_order": 2
         },
         {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_48/Ex_647_Em_690_stitched",
-            "output_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_48",
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_53/Ex_561_Em_600_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_53",
             "output_type": "Zarr",
+            "scroll_axis": 4,
             "chunk_size": 128,
             "downscale_factor": 2,
             "levels": 5,
-            "resize_order": 0
+            "resize_order": 2
+        },
+        {
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_53/Ex_647_Em_690_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_53",
+            "output_type": "Zarr",
+            "scroll_axis": 4,
+            "chunk_size": 128,
+            "downscale_factor": 2,
+            "levels": 5,
+            "resize_order": 2
         }
     ]
 }

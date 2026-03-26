@@ -87,10 +87,25 @@ def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_typ
         logging.error("resize-shape currently not supported for scroll outputs. Use input shape.")
         return False
         
-    axis = args.scroll_axis
+    scroll_axis = args.scroll_axis
+    is_reverse = scroll_axis >= 3
+    axis = scroll_axis - 3 if is_reverse else scroll_axis
+    
+    if axis < 0 or axis > 2:
+        logging.error(f"Invalid scroll_axis: {scroll_axis}. Use 0-2 for forward, 3-5 for reverse.")
+        return False
+
     axis_char = ["z", "y", "x"][axis]
     num_slices = reader.volume_shape[axis]
     
+    # Calculate the transposed shape for the writer
+    if axis == 0:
+        writer_shape = reader.volume_shape
+    elif axis == 1:
+        writer_shape = (reader.volume_shape[1], reader.volume_shape[0], reader.volume_shape[2])
+    else:  # axis == 2
+        writer_shape = (reader.volume_shape[2], reader.volume_shape[0], reader.volume_shape[1])
+
     # Base names for the slices
     file_names = [Path(f"{reader.volume_name}_{axis_char}{i:05d}") for i in range(num_slices)]
 
@@ -98,10 +113,10 @@ def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_typ
         output_path=args.output_path,
         output_name=reader.volume_name,
         output_type=io_output_type,
-        full_res_shape=tuple(reader.volume_shape),
+        full_res_shape=tuple(writer_shape),
         output_dtype=reader.volume_dtype,
         file_name=file_names,
-        input_shape=tuple(reader.volume_shape),
+        input_shape=tuple(writer_shape),
         io_workers=io_workers,
     )
 
@@ -115,10 +130,29 @@ def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_typ
     handler = axis_handlers[axis]
     step = args.chunk_size
 
+    # Prepare ranges
+    ranges = []
     for start in range(0, axis_length, step):
         end = min(start + step, axis_length)
+        ranges.append((start, end))
+    
+    # If reverse, we process chunks from the end of the volume to the start
+    # so that file_00000 corresponds to the LAST slice of the volume.
+    if is_reverse:
+        ranges.reverse()
+
+    current_file_idx = 0
+    for start, end in ranges:
         arr = handler(start, end)
-        writer.write(arr, z_start=start, z_end=end)
+        
+        if is_reverse:
+            # Flip the slices within the chunk so the last slice becomes the first
+            arr = np.flip(arr, axis=0)
+        
+        # Write to the next available file slots
+        num_in_chunk = end - start
+        writer.write(arr, z_start=current_file_idx, z_end=current_file_idx + num_in_chunk)
+        current_file_idx += num_in_chunk
         del arr
 
     return True
@@ -154,12 +188,10 @@ def run_task(task_config, full_config):
         logging.info(f"Processing input: {input_path}")
         logging.info(f"Output directory: {output_path}")
 
-        transpose = task_config.get("transpose")
         try:
             reader = FileReader(
                 input_path=input_path,
                 memory_limit_gb=memory_limit,
-                transpose_order=tuple(transpose) if transpose else None,
                 io_workers=io_workers,
             )
         except Exception as e:
