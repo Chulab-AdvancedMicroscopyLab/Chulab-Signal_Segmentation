@@ -54,30 +54,20 @@
     },
     "converter": [
         {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_53/Ex_647_Em_690_stitched",
-            "output_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_53",
+            "input_path": "/mnt/NAS50T/Nebulum_technology/Nebulum/Pan_MK/Pan_MK_46/Ex_647_Em_690_stitched",
+            "output_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_46",
             "output_type": "Zarr",
-            "scroll_axis": 4,
+            "scroll_axis": 1,
             "chunk_size": 128,
             "downscale_factor": 2,
             "levels": 5,
             "resize_order": 2
         },
         {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_53/Ex_561_Em_600_stitched.zarr",
-            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_53",
-            "output_type": "Zarr",
-            "scroll_axis": 4,
-            "chunk_size": 128,
-            "downscale_factor": 2,
-            "levels": 5,
-            "resize_order": 2
-        },
-        {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_53/Ex_647_Em_690_stitched.zarr",
-            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_53",
-            "output_type": "Zarr",
-            "scroll_axis": 4,
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_46/Ex_647_Em_690_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_46",
+            "output_type": "Scroll-Tif",
+            "scroll_axis": 1,
             "chunk_size": 128,
             "downscale_factor": 2,
             "levels": 5,

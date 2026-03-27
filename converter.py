@@ -10,6 +10,7 @@ results incrementally via `IO.writer.FileWriter` to keep memory bounded.
 import argparse
 import logging
 import json
+import gc
 from pathlib import Path
 import numpy as np
 
@@ -79,6 +80,7 @@ def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_typ
     arr = reader.read(z_start=0, z_end=reader.volume_shape[0])
     writer.write(arr, z_start=0, z_end=reader.volume_shape[0])
     del arr
+    gc.collect()
     return True
 
 def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_type: str, io_workers: int = 4) -> bool:
@@ -154,6 +156,7 @@ def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_typ
         writer.write(arr, z_start=current_file_idx, z_end=current_file_idx + num_in_chunk)
         current_file_idx += num_in_chunk
         del arr
+        gc.collect()
 
     return True
 

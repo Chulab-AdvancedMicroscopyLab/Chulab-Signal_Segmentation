@@ -189,31 +189,27 @@ class FileReader:
                 offset += length
         else:
             # Multithreaded loading for standard files (TIFF, PNG, etc.)
-            def _load_slice(idx, f_z0, f_z1, out_offset, length):
+            def _load_task(task):
+                idx, f_z0, f_z1, out_offset, length = task
                 arr = read_image(
                     self.volume_files[idx],
                     self.volume_types[idx],
-                    True
+                    read_to_array=True,
                 )
+                # Ensure we are only grabbing the requested sub-crop in Y and X as well
                 out[out_offset:out_offset+length, :, :] = arr[f_z0:f_z1, y0:y1, x0:x1]
-                # arr is garbage collected here naturally
+
+            task_list = []
+            current_offset = 0
+            for idx, base_z, f_z0, f_z1 in needed:
+                length = f_z1 - f_z0
+                task_list.append((idx, f_z0, f_z1, current_offset, length))
+                current_offset += length
 
             with ThreadPoolExecutor(max_workers=self.io_workers) as executor:
-                futures = []
-                offset = 0
-                for idx, _, file_z0, file_z1 in needed:
-                    length = file_z1 - file_z0
-                    futures.append(
-                        executor.submit(_load_slice, idx, file_z0, file_z1, offset, length)
-                    )
-                    offset += length
-                
-                # Wait for all threads to finish and catch any exceptions
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        raise RuntimeError(f"Error loading volume data: {e}")
+                # Using map or submit here is cleaner than manual grouping 
+                # unless you have thousands of tiny files.
+                list(executor.map(_load_task, task_list))
 
         return out
     
