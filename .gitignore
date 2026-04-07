@@ -13,3 +13,4 @@ __pycache__/
 docker-compose.yml
 /datas
 /output
+/configs
