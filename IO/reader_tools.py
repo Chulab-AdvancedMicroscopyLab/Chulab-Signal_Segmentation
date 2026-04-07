@@ -27,6 +27,13 @@ def _ensure_3d(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
+def _ensure_3d_shape(shape: tuple) -> tuple:
+    """Promote a 2D shape (y,x) to 3D (1,y,x); leave >3D untouched."""
+    if len(shape) == 2:
+        return (1,) + shape
+    return shape
+
+
 def _apply_transpose(arr: np.ndarray, order: tuple[int, ...] | None) -> np.ndarray:
     """Apply a numpy-style axis permutation if provided."""
     if order is None:
@@ -83,6 +90,17 @@ def _reader_tiff(path: Path, read_to_array: bool = True, transpose_order: tuple[
         axes = series.axes
         dtype = series.dtype
 
+        if not read_to_array:
+            z, y, x = _collapse_shape_to_zyx(series.shape, axes)
+            shape = _apply_shape_order((z, y, x), transpose_order)
+            size_gb = _estimate_size_gb(shape, dtype)
+            # Warn if multi-channel/time collapsed
+            extra_axes = ''.join(a for a in axes if a not in ('Y', 'X', 'Z'))
+            if any(a in axes for a in ('C', 'S', 'T')):
+                logger.warning(f"Collapsing extra TIFF axes '{extra_axes}' into Z for metadata; resulting shape {shape}")
+            return shape, dtype, size_gb
+
+        # Full Read Path
         # Simplify: ensure all pages in the chosen series share the same (Y, X)
         xy_dims = set()
         try:
@@ -95,16 +113,6 @@ def _reader_tiff(path: Path, read_to_array: bool = True, transpose_order: tuple[
             pass
         if len(xy_dims) > 1:
             raise ValueError(f"Mismatch in XY dimensions across TIFF pages: {xy_dims}")
-
-        if not read_to_array:
-            z, y, x = _collapse_shape_to_zyx(series.shape, axes)
-            shape = _apply_shape_order((z, y, x), transpose_order)
-            size_gb = _estimate_size_gb(shape, dtype)
-            # Warn if multi-channel/time collapsed
-            extra_axes = ''.join(a for a in axes if a not in ('Y', 'X', 'Z'))
-            if any(a in axes for a in ('C', 'S', 'T')):
-                logger.warning(f"Collapsing extra TIFF axes '{extra_axes}' into Z for metadata; resulting shape {shape}")
-            return shape, dtype, size_gb
 
         # Read the selected series and collapse to (Z,Y,X)
         arr = series.asarray()
@@ -180,8 +188,26 @@ def _reader_imageio(path: Path, read_to_array: bool = True, transpose_order: tup
         return _apply_transpose(arr, transpose_order)
     
     # metadata‐only
-    arr = iio.imread(str(path))
-    shape, dtype = arr.shape, arr.dtype
+    # Try to get metadata without reading pixels
+    try:
+        props = iio.immeta(str(path))
+        # imageio.v3 immeta returns a dict. We might need imread with a specific mode or just use props.
+        # Fallback to imread if props doesn't have shape
+        if 'shape' in props:
+            shape, dtype = props['shape'], props['dtype']
+        else:
+            # imread(..., index=...) or similar might be needed, but for common images 
+            # we just want the header. imageio.v3 doesn't have a direct "shape only" for all formats.
+            # improps is usually better in v3
+            props = iio.improps(str(path))
+            shape, dtype = props.shape, props.dtype
+    except Exception:
+        # Final fallback if immeta/improps fails: read only the first pixel or just the whole thing
+        # (though reading the whole thing is what we want to avoid)
+        arr = iio.imread(str(path))
+        shape, dtype = arr.shape, arr.dtype
+
+    shape = _ensure_3d_shape(shape)
     shape = _apply_shape_order(shape, transpose_order)
     size_gb = _estimate_size_gb(shape, dtype)
     return shape, dtype, size_gb
@@ -211,21 +237,40 @@ def read_image(
         reader = _reader_imageio
 
     try:
-        result = reader(file_path, read_to_array=read_to_array, transpose_order=transpose_order)
         if not read_to_array:
-            # result is (shape, dtype, size_gb)
-            # We need to add mean and std. Since we need to calculate them, 
-            # we must read the data if not already provided by the reader.
-            # Most readers currently don't return them.
-            if len(result) == 3:
-                shape, dtype, size_gb = result
-                # To get mean/std, we actually need to load the data.
-                # This might be slow for large files, but it's what's requested.
-                arr = reader(file_path, read_to_array=True, transpose_order=transpose_order)
-                mean = float(np.mean(arr))
-                std = float(np.std(arr))
-                return shape, dtype, size_gb, mean, std
-        return result
+            try:
+                # Attempt a metadata-only read first
+                res = reader(file_path, read_to_array=False, transpose_order=transpose_order)
+                
+                # If the reader returned the (shape, dtype, size_gb) tuple, use it
+                if isinstance(res, tuple) and len(res) == 3:
+                    shape, dtype, size_gb = res
+                    return shape, dtype, size_gb, 0.0, 0.0
+                
+                # If it didn't return a tuple, it might have returned an array despite the flag
+                arr = res
+                shape = tuple(arr.shape)
+                dtype = arr.dtype
+                size_gb = _estimate_size_gb(shape, dtype)
+                return shape, dtype, size_gb, 0.0, 0.0
+            except Exception as e:
+                logger.debug(f"Metadata read failed for {file_path}, falling back to full read: {e}")
+                # Fall back to full read below
+                pass
+
+        # Standard full-array read
+        res = reader(file_path, read_to_array=True, transpose_order=transpose_order)
+        
+        # If we only wanted metadata but had to fall back to a full read
+        if not read_to_array:
+            arr = res
+            shape = tuple(arr.shape)
+            dtype = arr.dtype
+            size_gb = _estimate_size_gb(shape, dtype)
+            return shape, dtype, size_gb, 0.0, 0.0
+            
+        return res
+
     except Exception as e:
         logger.error(f"Error in read_image({file_path}): {e}")
         raise

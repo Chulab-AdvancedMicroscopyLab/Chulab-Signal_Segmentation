@@ -21,6 +21,7 @@ from typing import Tuple, List
 import torch
 from monai.data.dataloader import DataLoader
 from monai.transforms.compose import Compose
+from monai.transforms.intensity.dictionary import NormalizeIntensityd
 from monai.transforms.utility.dictionary import ToTensord
 
 from IO import FileReader, FileWriter, InferenceMicroscopyDataset, TYPE_MAP
@@ -30,6 +31,7 @@ from utils.concurrency import initialize_concurrency
 
 # Standard transform
 inference_transform = Compose([
+    NormalizeIntensityd(keys=["image"], dtype=torch.float32),
     ToTensord(keys=["image"], dtype=torch.float32),
 ])
 
@@ -196,6 +198,8 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
         if inf_data is None: break
             
         dataset, z_start, z_end, z_overlay_actual = inf_data
+        # Use num_workers=0 because patches are already pre-extracted into a shared memory tensor.
+        # This avoids the overhead of spawning/forking processes in every loop iteration.
         loader = DataLoader(dataset, batch_size=config.get("batch_size", 8), shuffle=False, num_workers=0)
         
         logging.info(f"  Inference Z:{z_start}-{z_end}")

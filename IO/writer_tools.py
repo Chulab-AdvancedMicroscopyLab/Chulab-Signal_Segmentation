@@ -63,16 +63,40 @@ def _collect_resized_slices(executor: ProcessPoolExecutor, tasks, worker, stack_
 
 
 def write_chunk_to_zarr(array: np.ndarray, chunk_shape: tuple[int, int, int], target, region) -> None:
-    """Persist a numpy block into the specified Zarr region using Dask chunking.
+    """Persist a numpy block into the specified Zarr region using parallel threads.
 
-    Args:
-        array (np.ndarray): Array to write.
-        chunk_shape (tuple[int, int, int]): Dask chunk size used for IO.
-        target: Zarr array/group dataset to write into.
-        region: Region tuple of slices matching the target rank.
+    Bypasses Dask to avoid graph overhead and uses a ThreadPoolExecutor to 
+    parallelize the compression and writing of individual 3D chunks.
     """
-    darr = da.from_array(array, chunks=chunk_shape)
-    darr.to_zarr(target, region=region)
+    from concurrent.futures import ThreadPoolExecutor
+    import os
+
+    # Total dimensions of the block being written
+    dz, dy, dx = array.shape
+    # Size of each Zarr chunk
+    cz, cy, cx = chunk_shape
+    
+    def _write_block(z0, z1, y0, y1, x0, x1):
+        # Calculate destination slices relative to the target 'region' start
+        dest_region = (
+            slice(region[0].start + z0, region[0].start + z1),
+            slice(region[1].start + y0, region[1].start + y1),
+            slice(region[2].start + x0, region[2].start + x1)
+        )
+        # Zarr handles compression in parallel across threads for separate chunks
+        target[dest_region] = array[z0:z1, y0:y1, x0:x1]
+
+    num_workers = os.cpu_count() or 4
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for z in range(0, dz, cz):
+            for y in range(0, dy, cy):
+                for x in range(0, dx, cx):
+                    executor.submit(
+                        _write_block, 
+                        z, min(z + cz, dz),
+                        y, min(y + cy, dy),
+                        x, min(x + cx, dx)
+                    )
 
 
 def _ensure_temp_store(
@@ -165,17 +189,18 @@ def resize_xy_block_to_temp(
             for i in range(block.shape[0])
         ]
         arr = _collect_resized_slices(executor, tasks, _resize_xy_worker, stack_axis=0)
-        logger.info(f"Writing volume to temp z: {z0} - {z1}")
-        write_chunk_to_zarr(
-            arr,
-            chunk_size,
-            temp_arr,
-            (
-                slice(z0, z1),
-                slice(0, target_y),
-                slice(0, target_x),
-            ),
-        )
+    
+    logger.info(f"Writing volume to temp z: {z0} - {z1}")
+    write_chunk_to_zarr(
+        arr,
+        chunk_size,
+        temp_arr,
+        (
+            slice(z0, z1),
+            slice(0, target_y),
+            slice(0, target_x),
+        ),
+    )
 
     return temp_store_path
 
@@ -222,17 +247,18 @@ def resize_xy_volume_to_temp(
                 for i in range(block_chunk.shape[0])
             ]
             arr = _collect_resized_slices(executor, tasks, _resize_xy_worker, stack_axis=0)
-            logger.info(f"Writing volume to temp z: {z0} - {z1}")
-            write_chunk_to_zarr(
-                arr,
-                chunk_size,
-                temp_arr,
-                (
-                    slice(z0, z1),
-                    slice(0, target_y),
-                    slice(0, target_x),
-                ),
-            )
+    
+    logger.info(f"Writing volume to temp z: {z0} - {z1}")
+    write_chunk_to_zarr(
+        arr,
+        chunk_size,
+        temp_arr,
+        (
+            slice(z0, z1),
+            slice(0, target_y),
+            slice(0, target_x),
+        ),
+    )
 
     return temp_store_path
 
