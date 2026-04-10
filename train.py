@@ -18,7 +18,7 @@ from monai.transforms.utility.dictionary import ToTensord
 from monai.transforms.spatial.dictionary import RandFlipd
 from monai.transforms.intensity.dictionary import (
     GaussianSmoothd, NormalizeIntensityd, RandAdjustContrastd, RandBiasFieldd, 
-    RandShiftIntensityd, RandScaleIntensityd
+    RandShiftIntensityd, RandScaleIntensityd, RandGaussianNoised
 )
 from monai.transforms.post.dictionary import AsDiscreted
 from monai.data.dataloader import DataLoader
@@ -45,10 +45,11 @@ METRICS_TO_COMPUTE: Dict[str, MetricFn] = {
 train_transform = Compose([
     NormalizeIntensityd(keys=["image"], dtype=torch.float32),
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
-    GaussianSmoothd(keys=["mask"], sigma=0.1),
+    # GaussianSmoothd(keys=["mask"], sigma=0.1),
     AsDiscreted(keys=["mask"], threshold=0.5),
     RandFlipd(keys=["image", "mask"], spatial_axis=1, prob=0.5),
     RandAdjustContrastd(keys=["image"], prob=0.3),
+    RandGaussianNoised(keys=["image"], prob=0.4, mean=0.0, std=0.1),
     RandBiasFieldd(keys=["image"], prob=0.2),
     RandShiftIntensityd(keys=["image"], offsets=0.2, prob=0.3),
     RandScaleIntensityd(keys=["image"], factors=0.2, prob=0.3),
@@ -57,7 +58,7 @@ train_transform = Compose([
 val_transform = Compose([
     NormalizeIntensityd(keys=["image"], dtype=torch.float32),
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
-    GaussianSmoothd(keys=["mask"], sigma=0.1),
+    # GaussianSmoothd(keys=["mask"], sigma=0.1),
     AsDiscreted(keys=["mask"], threshold=0.5),
 ])
 

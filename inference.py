@@ -27,11 +27,11 @@ from monai.transforms.utility.dictionary import ToTensord
 from IO import FileReader, FileWriter, InferenceMicroscopyDataset, TYPE_MAP
 from utils.cropper import compute_z_plan
 from utils.stitcher import stitch_image
+from utils.visualization import visualize_predictions
 from utils.concurrency import initialize_concurrency
 
 # Standard transform
 inference_transform = Compose([
-    NormalizeIntensityd(keys=["image"], dtype=torch.float32),
     ToTensord(keys=["image"], dtype=torch.float32),
 ])
 
@@ -160,7 +160,12 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
     resources = full_config.get("resources", {})
     io_workers = resources.get("io_workers", 4)
 
-    data_reader = FileReader(volume_path, io_workers=io_workers)
+    data_reader = FileReader(
+        volume_path, 
+        io_workers=io_workers, 
+        compute_stats=True, 
+        stats_sample_rate=config.get("stats_sample_rate", 0.1)
+    )
     os.makedirs(output_dir, exist_ok=True)
     
     output_type_str = config.get("output_type", "Scroll-Tif")
@@ -193,11 +198,39 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
     
     logging.info(f"Inference: {output_dir / output_name}")
     
+    # 1. Spot Check: Visualize middle chunk before starting the full run
+    if config.get("visualize_preview", False):
+        mid_idx = len(z_plan) // 2
+        z_start, z_overlay_actual = z_plan[mid_idx]
+        z_end = min(z_start + patch_size[0], data_reader.volume_shape[0])
+        
+        logging.info(f"Spot Check: Visualizing middle chunk Z:{z_start}-{z_end}")
+        spot_ds = InferenceMicroscopyDataset(
+            image_reader=data_reader,
+            z_range=(z_start, z_end),
+            patch_size=patch_size,
+            overlap=overlay_3d, 
+            transform=inference_transform
+        )
+        spot_loader = DataLoader(spot_ds, batch_size=config.get("batch_size", 8), shuffle=False, num_workers=0)
+        spot_preds = run_inference(model, spot_loader, device)
+        
+        # Spot check visualization: pass predictions as the second argument (where 'masks' would be)
+        # image_tensors[0] is (N, 1, D, H, W)
+        visualize_predictions(
+            images=spot_ds.image_tensors[0].numpy(), 
+            masks=spot_preds, 
+            predictions=None, 
+            save_path=output_dir, 
+            title=f"{output_name}_spot_check_Z{z_start}"
+        )
+
     while True:
         inf_data = inf_queue.get()
         if inf_data is None: break
             
         dataset, z_start, z_end, z_overlay_actual = inf_data
+
         # Use num_workers=0 because patches are already pre-extracted into a shared memory tensor.
         # This avoids the overhead of spawning/forking processes in every loop iteration.
         loader = DataLoader(dataset, batch_size=config.get("batch_size", 8), shuffle=False, num_workers=0)

@@ -98,10 +98,12 @@ class FileReader:
         volume_cumulative_z (list[int]): Cumulative Z extents for each file.
     """
 
-    def __init__(self, input_path, memory_limit_gb=32, io_workers=4):
+    def __init__(self, input_path, memory_limit_gb=32, io_workers=4, compute_stats=False, stats_sample_rate=1.0):
         self.input_path = Path(input_path)
         self.memory_limit_bytes = memory_limit_gb * 1024 ** 3
         self.io_workers = io_workers
+        self.compute_stats = compute_stats
+        self.stats_sample_rate = float(stats_sample_rate)
 
         logger.info(f"Initializing FileReader with path: {self.input_path}")
 
@@ -246,6 +248,7 @@ class FileReader:
             RuntimeError: If metadata collection fails for any source file.
             ValueError: If XY shapes or dtypes are inconsistent.
         """
+        # Pass 1: Basic Metadata (+ Optional Stats if files are read anyway)
         entries = self._collect_volume_metadata()
         if not entries:
             raise RuntimeError("Failed to collect volume info for all input files")
@@ -261,7 +264,19 @@ class FileReader:
         self.volume_dtype = entries[0].dtype
         self.volume_sizes = [entry.size_gb for entry in entries]
 
-        self.volume_mean, self.volume_std = self._calculate_aggregate_stats(entries)
+        # Pass 2: Global Stats
+        if not self.compute_stats:
+            self.volume_mean, self.volume_std = 0.0, 0.0
+            return
+
+        # Check if we already have stats for ALL files from the metadata pass
+        if all(e.mean != 0.0 or e.std != 0.0 for e in entries):
+            logger.info("Aggregating global statistics from metadata pass...")
+            self.volume_mean, self.volume_std = self._calculate_aggregate_stats(entries)
+        else:
+            # We are missing stats for some files (likely large containers that used lightweight metadata)
+            # Run the efficient double-buffered chunked pass
+            self.volume_mean, self.volume_std = self._compute_global_stats()
 
     @staticmethod
     def _calculate_aggregate_stats(entries: list[VolumeMetadata]) -> tuple[float, float]:
@@ -295,7 +310,80 @@ class FileReader:
         mean_sq = sum_sq_val / total_pixels
         std = float(np.sqrt(max(0, mean_sq - mean**2)))
 
-        return mean, std
+        return float(mean), float(std)
+
+    def _compute_global_stats(self) -> tuple[float, float]:
+        """Calculate weighted mean and pooled standard deviation across the full volume.
+        
+        Uses a double-buffering approach: one background thread handles sequential IO 
+        while the main thread performs calculations. This avoids IO competition.
+        """
+        slice_size_bytes = self.volume_shape[1] * self.volume_shape[2] * self.volume_dtype.itemsize
+        target_chunk_bytes = self.memory_limit_bytes * 0.1
+        chunk_size = max(1, int(target_chunk_bytes / slice_size_bytes))
+        chunk_size = min(chunk_size, 128)
+        
+        # Calculate sampling step (e.g. 0.5 sample rate -> step of 2 chunks)
+        step = max(1, int(1.0 / self.stats_sample_rate)) if self.stats_sample_rate < 1.0 else 1
+        
+        if step > 1:
+            logger.info(f"Computing global volume statistics in chunks of {chunk_size} Z-slices (Sampling 1/{step} chunks)...")
+        else:
+            logger.info(f"Computing global volume statistics in chunks of {chunk_size} Z-slices...")
+
+        all_z_ranges = []
+        for z0 in range(0, self.volume_shape[0], chunk_size):
+            z1 = min(z0 + chunk_size, self.volume_shape[0])
+            all_z_ranges.append((z0, z1))
+        
+        # Apply chunk-wise sampling
+        z_ranges = all_z_ranges[::step]
+
+        def _load_chunk(z_range):
+            return self.read(z_start=z_range[0], z_end=z_range[1])
+
+        def _calc_stats(data):
+            n = data.size
+            if n == 0: return 0, 0.0, 0.0
+            # Using float64 for accumulation to prevent overflow
+            m = np.mean(data, dtype=np.float64)
+            v = np.var(data, dtype=np.float64)
+            return n, m * n, (v + m**2) * n
+
+        total_n = 0
+        total_sum_x = 0.0
+        total_sum_x2 = 0.0
+
+        # max_workers=1 ensures strictly sequential IO (no thrashing)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            # Pre-load the first chunk
+            future_chunk = executor.submit(_load_chunk, z_ranges[0])
+            
+            for i in range(len(z_ranges)):
+                # 1. Get the data from the chunk we just finished reading
+                data = future_chunk.result()
+                
+                # 2. Immediately trigger the NEXT read in the background
+                if i + 1 < len(z_ranges):
+                    future_chunk = executor.submit(_load_chunk, z_ranges[i+1])
+                
+                # 3. Calculate stats for the current chunk while the next one loads
+                n, sx, sx2 = _calc_stats(data)
+                total_n += n
+                total_sum_x += sx
+                total_sum_x2 += sx2
+                
+                # 4. Explicitly delete to free memory for the next chunk
+                del data
+
+        if total_n == 0:
+            return 0.0, 0.0
+
+        mean = total_sum_x / total_n
+        var = (total_sum_x2 / total_n) - (mean**2)
+        std = float(np.sqrt(max(0, var)))
+        
+        return float(mean), std
 
     def _collect_volume_metadata(self) -> list[VolumeMetadata]:
         """Gather per-file metadata concurrently for the assembled volume.
@@ -307,11 +395,14 @@ class FileReader:
         metadata: list[VolumeMetadata | None] = [None] * len(self.volume_files)
 
         def process(file: Path, suffix: str) -> VolumeMetadata:
-            shape, dtype, size, mean, std = read_image(
+            res = read_image(
                 file,
                 suffix,
-                read_to_array=False
+                read_to_array=False,
+                compute_stats=self.compute_stats
             )
+            # read_image(..., read_to_array=False) returns (shape, dtype, size, mean, std)
+            shape, dtype, size, mean, std = res
             shape_zyx = tuple(int(dim) for dim in shape)  # normalize to ints
             return VolumeMetadata(
                 shape=shape_zyx, 

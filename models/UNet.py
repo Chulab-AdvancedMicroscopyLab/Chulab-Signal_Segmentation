@@ -49,8 +49,8 @@ class UNet(nn.Module):
         # 2. Tversky Loss (Differentiable)
         # alpha=0.3, beta=0.7 weights False Negatives more (improves Recall)
         # alpha + beta = 1.0 (standard Dice is 0.5/0.5)
-        t_alpha = 0.3
-        t_beta = 0.7
+        t_alpha = 0.5
+        t_beta = 0.5
         
         pred_soft = pred.sigmoid()
         target_soft = target.float()

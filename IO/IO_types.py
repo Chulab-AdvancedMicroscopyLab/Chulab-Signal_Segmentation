@@ -19,8 +19,8 @@ class VolumeMetadata:
     shape: tuple[int, int, int]
     dtype: np.dtype
     size_gb: float
-    mean: float
-    std: float
+    mean: float = 0.0
+    std: float = 0.0
 
 OUTPUT_CHOICES: tuple[str, ...] = (
     "OME-Zarr",

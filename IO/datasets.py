@@ -92,7 +92,8 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         neg_keep_ratio: float = 1.0,
         input_name: str = "Flatten_561",
         mask_name: str = "Flatten_561_mask",
-        io_workers: int = 4
+        io_workers: int = 4,
+        stats_sample_rate: float = 1.0
     ):
         all_image_patches = []
         all_mask_patches = []
@@ -124,7 +125,7 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         for img_path, msk_path in sorted(volumes_found):
             v_display_name = f"{img_path.parent.name}/{img_path.name}"
             
-            img_reader = FileReader(img_path, io_workers=io_workers)
+            img_reader = FileReader(img_path, io_workers=io_workers, compute_stats=True, stats_sample_rate=stats_sample_rate)
             if img_reader.volume_shape[0] < patch_size[0]:
                 logger.warning(f"Skipping {v_display_name}: Z-size {img_reader.volume_shape[0]} < patch_size {patch_size[0]}")
                 continue
@@ -217,17 +218,20 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         # 1. Read the full window
         img_data = image_reader.read(z_start=z_start, z_end=z_end)
         
-        # 2. Generate geometry
+        # 2. Global normalization
+        img_data = (img_data - image_reader.volume_mean) / (image_reader.volume_std + 1e-8)
+        
+        # 3. Generate geometry
         raw_indices = generate_patch_indices(img_data.shape, patch_size, overlap, z_offset=z_start)
         
-        # 3. Pre-extract all patches (this ensures workers do zero slicing/computation)
+        # 4. Pre-extract all patches (this ensures workers do zero slicing/computation)
         img_patches = extract_data_from_indices(img_data, raw_indices, as_stack=True)
         
-        # 4. Pack into a single contiguous shared tensor
+        # 5. Pack into a single contiguous shared tensor
         # Shape: (N_patches, 1, D, H, W)
         image_stack = torch.from_numpy(img_patches).unsqueeze(1).share_memory_()
         
-        # 5. Map indices to the stack while preserving PatchSlice for stitching
+        # 6. Map indices to the stack while preserving PatchSlice for stitching
         patch_indices = [
             PatchMetadata(volume_idx=i, slices=raw_indices[i]) 
             for i in range(len(raw_indices))
@@ -265,6 +269,7 @@ def load_train_dataset_from_config(
     neg_ratio = config.get("training_neg_keep_ratio", 1.0)
     val_ratio = config.get("val_ratio", 0.3)
     seed = config.get("seed", 42)
+    stats_sample_rate = config.get("stats_sample_rate", 1.0)
 
     logger.info(f"Loading training data from {img_root}...")
     full_dataset = TrainMicroscopyDataset.from_folders(
@@ -273,9 +278,10 @@ def load_train_dataset_from_config(
         patch_size=patch_size,
         overlap=overlap,
         neg_keep_ratio=neg_ratio,
-        input_name=config.get("input_name", "Flatten_561"),
-        mask_name=config.get("mask_name", "Flatten_561_mask"),
-        io_workers=io_workers
+        input_name=config.get("input_name", "images"),
+        mask_name=config.get("mask_name", "images_mask"),
+        io_workers=io_workers,
+        stats_sample_rate=stats_sample_rate
     )
 
     return full_dataset.split(
