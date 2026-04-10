@@ -215,16 +215,29 @@ def _reader_imageio(path: Path, read_to_array: bool = True, transpose_order: tup
 
 # ——— Dispatcher ———
 
+def _calculate_stats(arr: np.ndarray | da.Array) -> tuple[float, float]:
+    """Compute mean and std for an array, supporting dask."""
+    if hasattr(arr, 'compute'):
+        mean = float(arr.mean().compute())
+        std = float(arr.std().compute())
+    else:
+        mean = float(np.mean(arr))
+        std = float(np.std(arr))
+    return mean, std
+
+
 def read_image(
     file_path: Path,
     suffix: str,
     read_to_array: bool = True,
-    transpose_order: tuple[int, ...] | None = None
+    transpose_order: tuple[int, ...] | None = None,
+    compute_stats: bool = False
 ):
     """
     Unified reader. Returns either:
-      - numpy array (if read_to_array=True)
-      - (shape, dtype, size_gb, mean, std) tuple
+      - numpy array (if read_to_array=True and compute_stats=False)
+      - (numpy array, mean, std) (if read_to_array=True and compute_stats=True)
+      - (shape, dtype, size_gb, mean, std) tuple (if read_to_array=False)
     """
     
     if suffix in (".tif", ".tiff"):
@@ -245,6 +258,8 @@ def read_image(
                 # If the reader returned the (shape, dtype, size_gb) tuple, use it
                 if isinstance(res, tuple) and len(res) == 3:
                     shape, dtype, size_gb = res
+                    # If we only wanted metadata and didn't have to read pixels, 
+                    # we don't calculate stats here (it would be a 2nd read).
                     return shape, dtype, size_gb, 0.0, 0.0
                 
                 # If it didn't return a tuple, it might have returned an array despite the flag
@@ -252,7 +267,10 @@ def read_image(
                 shape = tuple(arr.shape)
                 dtype = arr.dtype
                 size_gb = _estimate_size_gb(shape, dtype)
-                return shape, dtype, size_gb, 0.0, 0.0
+                mean, std = 0.0, 0.0
+                if compute_stats:
+                    mean, std = _calculate_stats(arr)
+                return shape, dtype, size_gb, mean, std
             except Exception as e:
                 logger.debug(f"Metadata read failed for {file_path}, falling back to full read: {e}")
                 # Fall back to full read below
@@ -267,9 +285,20 @@ def read_image(
             shape = tuple(arr.shape)
             dtype = arr.dtype
             size_gb = _estimate_size_gb(shape, dtype)
-            return shape, dtype, size_gb, 0.0, 0.0
+            mean, std = 0.0, 0.0
+            if compute_stats:
+                mean, std = _calculate_stats(arr)
+            return shape, dtype, size_gb, mean, std
             
+        if compute_stats:
+            mean, std = _calculate_stats(res)
+            return res, mean, std
+
         return res
+
+    except Exception as e:
+        logger.error(f"Error in read_image({file_path}): {e}")
+        raise
 
     except Exception as e:
         logger.error(f"Error in read_image({file_path}): {e}")

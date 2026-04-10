@@ -124,8 +124,9 @@ def visualize_dataset(dataset, save_path: str = "./", title: str = "dataset_prev
             
     _draw_grid(np.array(images), np.array(masks), None, save_path, title, max_samples)
 
-def visualize_predictions(images: np.ndarray, masks: np.ndarray, predictions: np.ndarray, save_path: str = "./", title: str = "model_results", max_samples: int = 20):
+def visualize_predictions(images: np.ndarray, masks: np.ndarray, predictions: Optional[np.ndarray] = None, save_path: str = "./", title: str = "model_results", max_samples: int = 50):
     """
     Displays Image, Mask (GT), and Model Prediction (post-inference).
+    If Ground Truth is not available, pass predictions as the second argument.
     """
-    _draw_grid(images, masks, predictions, save_path, title, max_samples)
+    _draw_grid(np.array(images), np.array(masks), predictions, save_path, title, max_samples)
