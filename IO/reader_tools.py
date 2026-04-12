@@ -52,7 +52,7 @@ def _apply_shape_order(shape: tuple[int, ...], order: tuple[int, ...] | None) ->
 
 # ——— Readers ———
 
-def _reader_tiff(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None):
+def _reader_tiff(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None, max_workers: int | None = None):
     """Read TIFF imagery and normalize it to (Z, Y, X) orientation."""
     import tifffile
 
@@ -115,14 +115,15 @@ def _reader_tiff(path: Path, read_to_array: bool = True, transpose_order: tuple[
             raise ValueError(f"Mismatch in XY dimensions across TIFF pages: {xy_dims}")
 
         # Read the selected series and collapse to (Z,Y,X)
-        arr = series.asarray()
+        # Use max_workers for decompression if provided
+        arr = series.asarray(maxworkers=max_workers)
         if any(a in axes for a in ('C', 'S', 'T')):
             logger.warning(f"Collapsing extra TIFF axes to Z while reading: axes={axes}, shape={arr.shape}")
         arr_zyx = _collapse_array_to_zyx(arr, axes)
         return _apply_transpose(arr_zyx, transpose_order)
 
 
-def _reader_nii_gz(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None):
+def _reader_nii_gz(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None, max_workers: int | None = None):
     """Load NIfTI volumes, optionally returning metadata only."""
     import nibabel as nib
     
@@ -148,7 +149,7 @@ def _reader_nii_gz(path: Path, read_to_array: bool = True, transpose_order: tupl
     return shape, dtype, size_gb
 
 
-def _reader_zarr(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None):
+def _reader_zarr(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None, max_workers: int | None = None):
     """Open a Zarr store and either return the dask array or its metadata."""
     
     # Open the Zarr store. It could be an array or a group.
@@ -178,7 +179,7 @@ def _reader_zarr(path: Path, read_to_array: bool = True, transpose_order: tuple[
     return shape, dtype, size_gb
 
 
-def _reader_imageio(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None):
+def _reader_imageio(path: Path, read_to_array: bool = True, transpose_order: tuple[int, ...] | None = None, max_workers: int | None = None):
     """Fallback reader using imageio for common image formats."""
     import imageio.v3 as iio
     
@@ -231,7 +232,8 @@ def read_image(
     suffix: str,
     read_to_array: bool = True,
     transpose_order: tuple[int, ...] | None = None,
-    compute_stats: bool = False
+    compute_stats: bool = False,
+    max_workers: int | None = None
 ):
     """
     Unified reader. Returns either:
@@ -253,7 +255,7 @@ def read_image(
         if not read_to_array:
             try:
                 # Attempt a metadata-only read first
-                res = reader(file_path, read_to_array=False, transpose_order=transpose_order)
+                res = reader(file_path, read_to_array=False, transpose_order=transpose_order, max_workers=max_workers)
                 
                 # If the reader returned the (shape, dtype, size_gb) tuple, use it
                 if isinstance(res, tuple) and len(res) == 3:
@@ -277,7 +279,7 @@ def read_image(
                 pass
 
         # Standard full-array read
-        res = reader(file_path, read_to_array=True, transpose_order=transpose_order)
+        res = reader(file_path, read_to_array=True, transpose_order=transpose_order, max_workers=max_workers)
         
         # If we only wanted metadata but had to fall back to a full read
         if not read_to_array:
@@ -299,6 +301,7 @@ def read_image(
     except Exception as e:
         logger.error(f"Error in read_image({file_path}): {e}")
         raise
+
 
     except Exception as e:
         logger.error(f"Error in read_image({file_path}): {e}")

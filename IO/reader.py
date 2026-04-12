@@ -183,7 +183,8 @@ class FileReader:
                 arr = read_image(
                     self.volume_files[idx],
                     self.volume_types[idx],
-                    True
+                    read_to_array=True,
+                    max_workers=self.io_workers
                 )
                 slab = arr[file_z0:file_z1, y0:y1, x0:x1]
                 out[offset:offset+length, :, :] = slab
@@ -191,12 +192,19 @@ class FileReader:
                 offset += length
         else:
             # Multithreaded loading for standard files (TIFF, PNG, etc.)
+            num_needed = len(needed)
             def _load_task(task):
                 idx, f_z0, f_z1, out_offset, length = task
+                # If we are reading multiple files in parallel, we limit each file's 
+                # internal decompression to 1 worker to avoid over-subscribing CPU.
+                # If only one file is needed, we let it use all io_workers.
+                dec_workers = 1 if num_needed > 1 else self.io_workers
+                
                 arr = read_image(
                     self.volume_files[idx],
                     self.volume_types[idx],
                     read_to_array=True,
+                    max_workers=dec_workers
                 )
                 # Ensure we are only grabbing the requested sub-crop in Y and X as well
                 out[out_offset:out_offset+length, :, :] = arr[f_z0:f_z1, y0:y1, x0:x1]

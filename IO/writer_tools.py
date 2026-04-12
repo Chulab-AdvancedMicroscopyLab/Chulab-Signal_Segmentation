@@ -62,14 +62,13 @@ def _collect_resized_slices(executor: ProcessPoolExecutor, tasks, worker, stack_
     return np.stack(resized, axis=stack_axis)
 
 
-def write_chunk_to_zarr(array: np.ndarray, chunk_shape: tuple[int, int, int], target, region) -> None:
+def write_chunk_to_zarr(array: np.ndarray, chunk_shape: tuple[int, int, int], target, region, max_workers: int = 4) -> None:
     """Persist a numpy block into the specified Zarr region using parallel threads.
 
     Bypasses Dask to avoid graph overhead and uses a ThreadPoolExecutor to 
     parallelize the compression and writing of individual 3D chunks.
     """
     from concurrent.futures import ThreadPoolExecutor
-    import os
 
     # Total dimensions of the block being written
     dz, dy, dx = array.shape
@@ -86,8 +85,7 @@ def write_chunk_to_zarr(array: np.ndarray, chunk_shape: tuple[int, int, int], ta
         # Zarr handles compression in parallel across threads for separate chunks
         target[dest_region] = array[z0:z1, y0:y1, x0:x1]
 
-    num_workers = os.cpu_count() or 4
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for z in range(0, dz, cz):
             for y in range(0, dy, cy):
                 for x in range(0, dx, cx):
@@ -200,6 +198,7 @@ def resize_xy_block_to_temp(
             slice(0, target_y),
             slice(0, target_x),
         ),
+        max_workers=max_workers,
     )
 
     return temp_store_path
@@ -258,6 +257,7 @@ def resize_xy_volume_to_temp(
             slice(0, target_y),
             slice(0, target_x),
         ),
+        max_workers=max_workers,
     )
 
     return temp_store_path
@@ -360,6 +360,7 @@ def collapse_xz_from_temp(
                     slice(y0, y1),
                     slice(0, target_x),
                 ),
+                max_workers=max_workers,
             )
 
     # Attempt cleanup of the temporary directory created by resize_xy_to_temp

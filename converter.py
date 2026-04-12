@@ -7,15 +7,40 @@ The CLI streams the input volume using `IO.reader.FileReader` and writes
 results incrementally via `IO.writer.FileWriter` to keep memory bounded.
 """
 
+import sys
+import json
+from pathlib import Path
+
+# 1. PRE-IMPORT CONCURRENCY SETUP
+# We must set environment variables (OMP_NUM_THREADS, etc.) before 
+# importing numpy, numba, or dask to ensure they are respected.
+def _pre_init_concurrency():
+    config_path = "configs/config.json"
+    for i, arg in enumerate(sys.argv):
+        if (arg == "--config" or arg == "-c") and i + 1 < len(sys.argv):
+            config_path = sys.argv[i + 1]
+            break
+    
+    config = {}
+    if Path(config_path).exists():
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except Exception:
+            pass
+            
+    from utils.concurrency import initialize_concurrency
+    initialize_concurrency(config)
+
+_pre_init_concurrency()
+
+# 2. STANDARD IMPORTS
 import argparse
 import logging
-import json
 import gc
-from pathlib import Path
 import numpy as np
 
 from IO import FileReader, FileWriter, TYPE_MAP
-from utils.concurrency import initialize_concurrency
 
 logging.basicConfig(
     level=logging.INFO,
@@ -246,9 +271,6 @@ def main():
         full_config = json.load(f)
         converter_config = full_config.get("converter", [])
     
-    # Initialize concurrency settings
-    initialize_concurrency(full_config)
-
     # converter_config can be a single dict or a list of dicts
     if isinstance(converter_config, dict):
         tasks = [converter_config]
