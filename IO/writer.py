@@ -228,6 +228,7 @@ class FileWriter:
                 slice(y0, y1),
                 slice(x0, x1),
             ),
+            max_workers=self.io_workers
         )
 
     def _write_zarr(self, array: np.ndarray, z0: int, z1: int, y0: int, y1: int, x0: int, x1: int) -> None:
@@ -238,17 +239,18 @@ class FileWriter:
                 slice(y0, y1),
                 slice(x0, x1),
             ),
+            max_workers=self.io_workers
         )
 
     def _write_single_tiff(self, array: np.ndarray, z0: int, z1: int, *_: int) -> None:
         """Persist the supplied block as a multi-page TIFF file."""
         output_path = self.output_path / f"{self.output_name}_z{z0}-{z1}.tiff"
-        tifffile.imwrite(output_path, array.astype(self.output_dtype), imagej=True)
+        tifffile.imwrite(output_path, array.astype(self.output_dtype), imagej=True, maxworkers=self.io_workers)
 
     def _write_scroll_tiff(self, array: np.ndarray, z0: int, z1: int, *_: int) -> None:
         """Write per-slice TIFF files for scroll outputs."""
         for idx, file_path in enumerate(self.output_file_path[z0:z1]):
-            tifffile.imwrite(file_path, array[idx].astype(self.output_dtype), imagej=True)
+            tifffile.imwrite(file_path, array[idx].astype(self.output_dtype), imagej=True, maxworkers=self.io_workers)
 
     def _write_single_nii(self, array: np.ndarray, z0: int, z1: int, *_: int) -> None:
         """Persist a full NIfTI volume covering the requested range."""
