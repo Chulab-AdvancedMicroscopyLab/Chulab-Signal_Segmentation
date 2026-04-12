@@ -13,7 +13,7 @@ def initialize_concurrency(config: dict):
     """
     resources = config.get("resources", {})
     numba_threads = resources.get("numba_threads", 8)
-    dask_threads = resources.get("dask_threads", 4)
+    dask_threads = resources.get("dask_threads", 8)
     # We use dask_threads or numba_threads as a proxy for BLAS/OpenMP
     # Since they are sequential, we can afford to let them use more threads,
     # but we cap them to avoid over-subscription if other processes are running.
