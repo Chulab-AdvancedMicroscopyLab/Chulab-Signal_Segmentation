@@ -219,7 +219,7 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         img_data = image_reader.read(z_start=z_start, z_end=z_end)
         
         # 2. Global normalization
-        img_data = (img_data - image_reader.volume_mean) / (image_reader.volume_std + 1e-8)
+        image_reader.normalize_inplace(img_data)
         
         # 3. Generate geometry
         raw_indices = generate_patch_indices(img_data.shape, patch_size, overlap, z_offset=z_start)

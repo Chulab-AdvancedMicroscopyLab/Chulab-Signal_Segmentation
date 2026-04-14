@@ -44,19 +44,49 @@ def load_checkpoint(model_path: str):
 def run_inference(model: torch.nn.Module, loader: DataLoader, device: torch.device) -> np.ndarray:
     """Execute model inference on a dataloader. Returns (N, D, H, W)."""
     model.eval()
-    outputs = []
+    
+    dataset = loader.dataset
+    num_samples = len(dataset)
+    patch_shape = dataset.image_tensors[0].shape[2:] 
+    
+    # Pre-allocate on GPU to avoid "jumping" and minimize CPU-GPU syncs
+    # Note: If this hits OOM, we'd need to fall back to CPU pre-allocation.
+    # But for a single chunk's worth of patches, it usually fits.
+    try:
+        outputs = torch.empty((num_samples, *patch_shape), device=device, dtype=torch.float32)
+        use_gpu_acc = True
+    except RuntimeError: # OOM on GPU
+        logging.warning("OOM during GPU pre-allocation for inference, falling back to CPU.")
+        outputs = np.empty((num_samples, *patch_shape), dtype=np.float32)
+        use_gpu_acc = False
+    
+    curr_idx = 0
     with torch.no_grad():
         for inputs in loader:
             if isinstance(inputs, (list, tuple)):
                 inputs = inputs[0]
+            
+            batch_size = inputs.shape[0]
             inputs = inputs.to(device)
             preds = model(inputs)
-            if preds.ndim == 5: # 3D
+            
+            if preds.ndim == 5: # 3D (B, C, D, H, W)
                 preds = preds.squeeze(1) 
-            elif preds.ndim == 4: # 2D
+            elif preds.ndim == 4: # 2D (B, C, H, W)
                 preds = preds.squeeze(1)[:, np.newaxis, ...]
-            outputs.append(preds.detach().cpu().numpy())
-    return np.concatenate(outputs, axis=0)
+            
+            if use_gpu_acc:
+                outputs[curr_idx:curr_idx + batch_size] = preds
+            else:
+                outputs[curr_idx:curr_idx + batch_size] = preds.detach().cpu().numpy()
+            
+            curr_idx += batch_size
+            
+    # Single large transfer to CPU at the end
+    if use_gpu_acc:
+        return outputs.cpu().numpy()
+    else:
+        return outputs
 
 def disk_manager_worker(
     data_reader: FileReader,
@@ -184,6 +214,8 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
     overlay_3d = tuple(config.get("inference_overlay", [2, 4, 4]))
     z_plan = compute_z_plan(data_reader.volume_shape[0], patch_size[0], overlay_3d[0])
     
+    logging.info(f"Inference: {output_dir / output_name}")
+    
     inf_queue = queue.Queue(maxsize=1)
     stitch_queue = queue.Queue(maxsize=1)
     
@@ -195,35 +227,6 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
         daemon=True
     )
     disk_thread.start()
-    
-    logging.info(f"Inference: {output_dir / output_name}")
-    
-    # 1. Spot Check: Visualize middle chunk before starting the full run
-    if config.get("visualize_preview", False):
-        mid_idx = len(z_plan) // 2
-        z_start, z_overlay_actual = z_plan[mid_idx]
-        z_end = min(z_start + patch_size[0], data_reader.volume_shape[0])
-        
-        logging.info(f"Spot Check: Visualizing middle chunk Z:{z_start}-{z_end}")
-        spot_ds = InferenceMicroscopyDataset(
-            image_reader=data_reader,
-            z_range=(z_start, z_end),
-            patch_size=patch_size,
-            overlap=overlay_3d, 
-            transform=inference_transform
-        )
-        spot_loader = DataLoader(spot_ds, batch_size=config.get("batch_size", 8), shuffle=False, num_workers=0)
-        spot_preds = run_inference(model, spot_loader, device)
-        
-        # Spot check visualization: pass predictions as the second argument (where 'masks' would be)
-        # image_tensors[0] is (N, 1, D, H, W)
-        visualize_predictions(
-            images=spot_ds.image_tensors[0].numpy(), 
-            masks=spot_preds, 
-            predictions=None, 
-            save_path=output_dir, 
-            title=f"{output_name}_spot_check_Z{z_start}"
-        )
 
     while True:
         inf_data = inf_queue.get()

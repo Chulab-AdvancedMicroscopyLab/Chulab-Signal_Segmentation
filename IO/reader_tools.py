@@ -7,11 +7,49 @@ import logging
 import numpy as np
 import dask.array as da
 import zarr
+import numba
 from pathlib import Path
 
 # Initialize logging
 logger = logging.getLogger(__name__)
 
+@numba.njit(parallel=True, nogil=True)
+def _compute_accumulators_numba(data):
+    """Parallel single-pass n, sum_x, and sum_x2 using numba."""
+    flat = data.ravel()
+    n = flat.size
+    sum_x = 0.0
+    sum_x2 = 0.0
+    for i in numba.prange(n):
+        val = float(flat[i])
+        sum_x += val
+        sum_x2 += val * val
+    return n, sum_x, sum_x2
+
+@numba.njit(parallel=True, nogil=True)
+def _compute_stats_numba(data):
+    """Parallel single-pass mean and std using numba."""
+    n, sum_x, sum_x2 = _compute_accumulators_numba(data)
+    
+    if n == 0:
+        return 0.0, 0.0
+        
+    mean = sum_x / n
+    # Var = E[X^2] - (E[X])^2
+    var = (sum_x2 / n) - (mean**2)
+    std = float(np.sqrt(max(0, var)))
+    return mean, std
+
+
+@numba.njit(parallel=True, nogil=True)
+def _normalize_inplace_numba(data, mean, std):
+    """Parallel in-place normalization using numba."""
+    flat = data.ravel()
+    n = flat.size
+    eps = 1e-8
+    inv_std = 1.0 / (std + eps)
+    for i in numba.prange(n):
+        flat[i] = (flat[i] - mean) * inv_std
 
 # ——— Helper ———
 
@@ -219,11 +257,12 @@ def _reader_imageio(path: Path, read_to_array: bool = True, transpose_order: tup
 def _calculate_stats(arr: np.ndarray | da.Array) -> tuple[float, float]:
     """Compute mean and std for an array, supporting dask."""
     if hasattr(arr, 'compute'):
+        # Dask: parallel multi-pass can be optimized by dask itself
         mean = float(arr.mean().compute())
         std = float(arr.std().compute())
     else:
-        mean = float(np.mean(arr))
-        std = float(np.std(arr))
+        # Numpy: use parallelized single-pass numba
+        mean, std = _compute_stats_numba(arr)
     return mean, std
 
 
