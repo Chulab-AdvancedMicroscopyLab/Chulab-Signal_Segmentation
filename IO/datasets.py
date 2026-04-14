@@ -216,7 +216,7 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
     ):
         z_start, z_end = z_range
         # 1. Read the full window
-        img_data = image_reader.read(z_start=z_start, z_end=z_end)
+        img_data = image_reader.read(z_start=z_start, z_end=z_end).astype(np.float32)
         
         # 2. Global normalization
         image_reader.normalize_inplace(img_data)
