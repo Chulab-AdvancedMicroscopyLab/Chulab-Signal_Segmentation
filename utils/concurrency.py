@@ -13,19 +13,7 @@ def initialize_concurrency(config: dict):
     """
     resources = config.get("resources", {})
     numba_threads = resources.get("numba_threads", 8)
-    dask_threads = resources.get("dask_threads", 4)
-    # We use dask_threads or numba_threads as a proxy for BLAS/OpenMP
-    # Since they are sequential, we can afford to let them use more threads,
-    # but we cap them to avoid over-subscription if other processes are running.
-    blas_threads = max(numba_threads, dask_threads)
-
-    # Set OpenMP and MKL threads (Do this BEFORE importing numpy, numba, etc.)
-    os.environ["OMP_NUM_THREADS"] = str(blas_threads)
-    os.environ["MKL_NUM_THREADS"] = str(blas_threads)
-    os.environ["OPENBLAS_NUM_THREADS"] = str(blas_threads)
-    os.environ["VECLIB_MAXIMUM_THREADS"] = str(blas_threads)
-    os.environ["NUMEXPR_NUM_THREADS"] = str(blas_threads)
-    os.environ["NUMBA_NUM_THREADS"] = str(numba_threads)
+    dask_threads = resources.get("dask_threads", 8)
 
     # Set Multiprocessing Start Method
     # 'spawn' is safer on Linux when threads are present, avoiding 'cannot join threads' fork errors.
@@ -44,8 +32,6 @@ def initialize_concurrency(config: dict):
         logger.info(f"Numba thread count set to {numba_threads}")
     except Exception as e:
         logger.debug(f"Could not set Numba threads via API: {e}. Environment variable will be used.")
-
-    logger.info(f"BLAS/OpenMP thread limits set to {blas_threads}")
     
     # Dask specific configuration
     try:

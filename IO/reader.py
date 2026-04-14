@@ -13,7 +13,7 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-from .reader_tools import read_image
+from .reader_tools import read_image, _compute_accumulators_numba, _normalize_inplace_numba
 from .IO_types import VALID_SUFFIXES, VolumeMetadata
 
 
@@ -223,6 +223,14 @@ class FileReader:
 
         return out
     
+    def normalize_inplace(self, data: np.ndarray) -> np.ndarray:
+        """Apply global volume statistics to normalize the provided array in-place.
+        
+        Uses parallel Numba for fast execution and minimal memory overhead.
+        """
+        _normalize_inplace_numba(data, self.volume_mean, self.volume_std)
+        return data
+
     def _get_volume_files(self) -> tuple[list[Path], list[str], str]:
         """Collect source files and their suffixes for the input dataset.
 
@@ -347,42 +355,45 @@ class FileReader:
         # Apply chunk-wise sampling
         z_ranges = all_z_ranges[::step]
 
-        def _load_chunk(z_range):
-            return self.read(z_start=z_range[0], z_end=z_range[1])
-
-        def _calc_stats(data):
-            n = data.size
-            if n == 0: return 0, 0.0, 0.0
-            # Using float64 for accumulation to prevent overflow
-            m = np.mean(data, dtype=np.float64)
-            v = np.var(data, dtype=np.float64)
-            return n, m * n, (v + m**2) * n
+        def _process_chunk(z_range):
+            """Load data and compute local sum/sum_sq in one pass to avoid returning large arrays."""
+            data = self.read(z_start=z_range[0], z_end=z_range[1])
+            if data.size == 0:
+                return 0, 0.0, 0.0
+            
+            # Use parallel numba for fast single-pass stats
+            res = _compute_accumulators_numba(data)
+            
+            del data # Explicitly free
+            return res
 
         total_n = 0
         total_sum_x = 0.0
         total_sum_x2 = 0.0
 
-        # max_workers=1 ensures strictly sequential IO (no thrashing)
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            # Pre-load the first chunk
-            future_chunk = executor.submit(_load_chunk, z_ranges[0])
+        # Use 2 workers to allow one chunk to be processed (calc) while the next is being loaded.
+        # This effectively overlaps the CPU-bound calc with the IO-bound read.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Pre-submit the first chunk
+            curr_future = executor.submit(_process_chunk, z_ranges[0])
             
             for i in range(len(z_ranges)):
-                # 1. Get the data from the chunk we just finished reading
-                data = future_chunk.result()
-                
-                # 2. Immediately trigger the NEXT read in the background
+                # 1. Pre-submit the NEXT chunk to the other worker immediately
                 if i + 1 < len(z_ranges):
-                    future_chunk = executor.submit(_load_chunk, z_ranges[i+1])
+                    next_future = executor.submit(_process_chunk, z_ranges[i+1])
+                else:
+                    next_future = None
                 
-                # 3. Calculate stats for the current chunk while the next one loads
-                n, sx, sx2 = _calc_stats(data)
+                # 2. Wait for the CURRENT chunk results (n, sum_x, sum_x2)
+                n, sx, sx2 = curr_future.result()
+                
+                # 3. Accumulate stats for the current chunk
                 total_n += n
                 total_sum_x += sx
                 total_sum_x2 += sx2
                 
-                # 4. Explicitly delete to free memory for the next chunk
-                del data
+                # 4. Advance the future pointer for the next iteration
+                curr_future = next_future
 
         if total_n == 0:
             return 0.0, 0.0
