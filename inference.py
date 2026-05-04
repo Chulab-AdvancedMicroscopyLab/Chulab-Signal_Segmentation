@@ -6,6 +6,10 @@ Architecture:
    the previous result. This prevents I/O contention and stabilizes RAM.
 2. Main Process: Executes GPU inference.
 """
+import warnings
+# Suppress the cuda.cudart module deprecation warning (must be done before other imports)
+warnings.filterwarnings("ignore", category=FutureWarning, module="cuda")
+
 import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 

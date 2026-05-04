@@ -1,6 +1,10 @@
 """
 Train a 2D/3D U-Net-style segmentation model on microscopy data using shared memory.
 """
+import warnings
+# Suppress the cuda.cudart module deprecation warning (must be done before other imports)
+warnings.filterwarnings("ignore", category=FutureWarning, module="cuda")
+
 import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -73,7 +77,8 @@ def train_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    epoch: int
+    epoch: int,
+    max_grad_norm: Optional[float] = None
 ) -> Dict[str, float]:
     """Runs a single training epoch."""
     model.train()
@@ -83,7 +88,12 @@ def train_epoch(
     total_loss = 0.0
     n_batches = max(1, len(loader))
 
-    progress = tqdm(loader, desc=desc, leave=False)
+    progress = tqdm(
+        loader, 
+        desc=desc, 
+        leave=False, 
+        bar_format='{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+    )
     for images, masks in progress:
         images = images.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
@@ -92,6 +102,11 @@ def train_epoch(
         outputs = model(images)
         loss_val = model.get_loss(outputs, masks)
         loss_val.backward()
+        
+        # Gradient Clipping
+        if max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            
         optimizer.step()
 
         batch_loss = float(loss_val.item())
@@ -134,7 +149,12 @@ def valid_epoch(
     viz_cache = {"images": [], "masks": [], "outputs": []} if is_viz_epoch else None
 
     with torch.no_grad():
-        progress = tqdm(loader, desc=desc, leave=False)
+        progress = tqdm(
+        loader, 
+        desc=desc, 
+        leave=False, 
+        bar_format='{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+    )
         for images, masks in progress:
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
@@ -216,11 +236,18 @@ def main():
     import shutil
     shutil.copy2(args.config, os.path.join(artifact_path, "config.json"))
     
-    model_type = model_config.get("model_type", "monai_unet")
-    if model_type == "monai_unet":
-        model_src = os.path.join("models", "UNet.py")
+    model_type = config.get("model_type", "unet")
+    model_source_map = {
+        "unet": "UNet.py",
+        "attention_unet": "AttentionUNet.py",
+        "swin_unetr": "SwinUNETR.py",
+        "vnet": "VNet.py"
+    }
+    
+    if model_type in model_source_map:
+        model_src = os.path.join("models", model_source_map[model_type])
         if os.path.exists(model_src):
-            shutil.copy2(model_src, os.path.join(artifact_path, "UNet.py"))
+            shutil.copy2(model_src, os.path.join(artifact_path, model_source_map[model_type]))
 
     # Dataset & Dataloaders
     train_ds, val_ds = load_train_dataset_from_config(full_config, train_transform, val_transform)
@@ -247,9 +274,13 @@ def main():
     )
     
     # Model
-    spatial_dims = 3 if config.get("training_patch_size", [1, 64, 64])[0] > 1 else 2
-    model_config["spatial_dims"] = spatial_dims
-    model = build_model_from_config(model_config)
+    patch_size = config.get("training_patch_size", [16, 64, 64])
+    spatial_dims = 3 if patch_size[0] > 1 else 2
+    
+    if model_type in full_config.get("model", {}):
+        full_config["model"][model_type]["spatial_dims"] = spatial_dims
+        
+    model = build_model_from_config(full_config)
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device)
 
@@ -263,10 +294,12 @@ def main():
 
     # Training Loop
     logging.info("Starting training...")
+    max_grad_norm = config.get("max_grad_norm")
+    
     for epoch in range(config.get("training_epochs", 30)):
         print("\n"); logger.info(f"Epoch {epoch + 1}")
         
-        train_res = train_epoch(model, train_loader, optimizer, device, epoch)
+        train_res = train_epoch(model, train_loader, optimizer, device, epoch, max_grad_norm=max_grad_norm)
         val_res = valid_epoch(model, val_loader, device, epoch, viz_path=viz_path)
         
         for m in history.keys():

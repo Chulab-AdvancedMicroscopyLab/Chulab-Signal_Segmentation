@@ -126,15 +126,31 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             v_display_name = f"{img_path.parent.name}/{img_path.name}"
             
             img_reader = FileReader(img_path, io_workers=io_workers, compute_stats=True, stats_sample_rate=stats_sample_rate)
-            if img_reader.volume_shape[0] < patch_size[0]:
-                logger.warning(f"Skipping {v_display_name}: Z-size {img_reader.volume_shape[0]} < patch_size {patch_size[0]}")
-                continue
-                
             img_data = img_reader.read()
+            
+            # Check if padding is needed
+            current_shape = img_data.shape
+            pad_width = []
+            needs_padding = False
+            for i in range(3):
+                if current_shape[i] < patch_size[i]:
+                    pad_width.append((0, patch_size[i] - current_shape[i]))
+                    needs_padding = True
+                else:
+                    pad_width.append((0, 0))
+            
+            if needs_padding:
+                padded_shape = tuple(max(current_shape[i], patch_size[i]) for i in range(3))
+                logger.info(f"Volume {v_display_name}: Padded from {current_shape} to {padded_shape} to fit patch size {patch_size}")
+                img_data = np.pad(img_data, pad_width, mode='constant', constant_values=0)
+                
             img_data = (img_data - img_reader.volume_mean) / (img_reader.volume_std + 1e-8)
             
             msk_reader = FileReader(msk_path, io_workers=io_workers)
             msk_data = msk_reader.read().astype(np.float32)
+            
+            if needs_padding:
+                msk_data = np.pad(msk_data, pad_width, mode='constant', constant_values=0)
             
             indices = generate_patch_indices(img_data.shape, patch_size, overlap)
             filtered = filter_indices_by_mask(msk_data, indices, neg_keep_ratio)
