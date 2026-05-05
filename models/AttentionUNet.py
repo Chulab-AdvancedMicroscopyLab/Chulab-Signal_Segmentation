@@ -1,12 +1,12 @@
-from monai.networks.nets import UNet as MonaiUNet
+from monai.networks.nets import AttentionUnet as MonaiAttentionUnet
 import torch.nn as nn
 import torch
 from utils.metrics import hybrid_focal_tversky_loss
 
-class UNet(nn.Module):
+class AttentionUNet(nn.Module):
     """
-    A wrapper for MONAI's UNet.
-    Training loss (Soft Dice + BCE) is encapsulated within the model.
+    A wrapper for MONAI's AttentionUnet.
+    Uses attention gates to focus on relevant spatial areas.
     """
     def __init__(
         self, 
@@ -15,17 +15,15 @@ class UNet(nn.Module):
         out_channels, 
         channels=(32, 64, 128, 256, 512), 
         strides=(2, 2, 2, 2),
-        num_res_units=2,
         dropout=0.2
     ):
         super().__init__()
-        self.model = MonaiUNet(
+        self.model = MonaiAttentionUnet(
             spatial_dims=spatial_dims,
             in_channels=in_channels,
             out_channels=out_channels,
             channels=channels,
             strides=strides,
-            num_res_units=num_res_units,
             dropout=dropout
         )
 

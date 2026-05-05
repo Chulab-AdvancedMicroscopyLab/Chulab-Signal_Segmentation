@@ -7,16 +7,12 @@ logger = logging.getLogger(__name__)
 def initialize_concurrency(config: dict):
     """
     Sets environment variables and library thread limits based on the provided configuration.
-    
-    Args:
-        config: The complete configuration dictionary containing a 'resources' section.
     """
     resources = config.get("resources", {})
-    numba_threads = resources.get("numba_threads", 8)
+    numba_threads = str(resources.get("numba_threads", 8))
     dask_threads = resources.get("dask_threads", 8)
 
     # Set Multiprocessing Start Method
-    # 'spawn' is safer on Linux when threads are present, avoiding 'cannot join threads' fork errors.
     if platform.system() != 'Windows':
         import multiprocessing
         try:
@@ -25,15 +21,15 @@ def initialize_concurrency(config: dict):
         except Exception as e:
             logger.warning(f"Could not set multiprocessing start method: {e}")
 
-    # Set Numba threads via API if it was already imported/initialized
-    import numba
+    # Set Numba threads via API
     try:
-        numba.set_num_threads(numba_threads)
+        import numba
+        numba.set_num_threads(int(numba_threads))
         logger.info(f"Numba thread count set to {numba_threads}")
     except Exception as e:
-        logger.debug(f"Could not set Numba threads via API: {e}. Environment variable will be used.")
+        logger.debug(f"Could not set Numba threads: {e}")
     
-    # Dask specific configuration
+    # Dask configuration
     try:
         import dask
         dask.config.set(num_workers=dask_threads)
