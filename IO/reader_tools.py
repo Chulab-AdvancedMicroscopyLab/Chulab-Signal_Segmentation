@@ -40,10 +40,8 @@ def _compute_accumulators_numba(data):
         val = float(flat[i])
         sum_x += val
         sum_x2 += val * val
-        if val < min_v:
-            min_v = val
-        if val > max_v:
-            max_v = val
+        min_v = min(min_v, val)
+        max_v = max(max_v, val)
             
     return n, sum_x, sum_x2, min_v, max_v
 
