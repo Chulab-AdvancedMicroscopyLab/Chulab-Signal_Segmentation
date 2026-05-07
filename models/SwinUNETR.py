@@ -1,7 +1,6 @@
 from monai.networks.nets import SwinUNETR as MonaiSwinUNETR
 import torch.nn as nn
 import torch
-from utils.metrics import hybrid_focal_tversky_loss
 
 class SwinUNETR(nn.Module):
     """
@@ -28,6 +27,3 @@ class SwinUNETR(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-
-    def get_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return hybrid_focal_tversky_loss(pred, target)

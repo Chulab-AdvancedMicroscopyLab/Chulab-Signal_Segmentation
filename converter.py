@@ -53,14 +53,14 @@ def parse_args():
     parser.add_argument("--config", type=str, default="configs/config.json", required=True, help="Path to a JSON config file")
     return parser.parse_args()
 
-def _write_pyramid(reader: FileReader, args, full_res_shape, chunk_tuple, io_output_type: str, io_workers: int = 4) -> bool:
-    """Stream the full-resolution volume into a multiscale Zarr layout."""
+def _write_pyramid(reader: FileReader, args, full_res_shape, chunk_tuple, io_output_type: str, io_workers: int = 4, output_dtype=None) -> bool:
+    """Stream the full-resolution volume into a multiscale Zarr layout layout."""
     writer = FileWriter(
         output_path=args.output_path,
         output_name=reader.volume_name,
         output_type=io_output_type,
         full_res_shape=tuple(full_res_shape),
-        output_dtype=reader.volume_dtype,
+        output_dtype=output_dtype or reader.volume_dtype,
         chunk_size=chunk_tuple,
         n_level=args.levels,
         resize_factor=args.downscale_factor,
@@ -86,7 +86,7 @@ def _write_pyramid(reader: FileReader, args, full_res_shape, chunk_tuple, io_out
 
     return True
 
-def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_type: str, io_workers: int = 4) -> bool:
+def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_type: str, io_workers: int = 4, output_dtype=None) -> bool:
     """Write a single full-resolution output volume for TIFF or NIfTI targets."""
     if tuple(full_res_shape) != tuple(reader.volume_shape):
         logging.error("resize-shape currently not supported for single outputs. Use input shape.")
@@ -97,7 +97,7 @@ def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_typ
         output_name=reader.volume_name,
         output_type=io_output_type,
         full_res_shape=tuple(full_res_shape),
-        output_dtype=reader.volume_dtype,
+        output_dtype=output_dtype or reader.volume_dtype,
         input_shape=tuple(reader.volume_shape),
         io_workers=io_workers,
     )
@@ -108,7 +108,7 @@ def _write_single_volume(reader: FileReader, args, full_res_shape, io_output_typ
     gc.collect()
     return True
 
-def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_type: str, io_workers: int = 4) -> bool:
+def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_type: str, io_workers: int = 4, output_dtype=None) -> bool:
     """Emit individual 2D slices along the selected axis for scroll outputs."""
     if tuple(full_res_shape) != tuple(reader.volume_shape):
         logging.error("resize-shape currently not supported for scroll outputs. Use input shape.")
@@ -141,7 +141,7 @@ def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_typ
         output_name=reader.volume_name,
         output_type=io_output_type,
         full_res_shape=tuple(writer_shape),
-        output_dtype=reader.volume_dtype,
+        output_dtype=output_dtype or reader.volume_dtype,
         file_name=file_names,
         input_shape=tuple(writer_shape),
         io_workers=io_workers,
@@ -188,6 +188,7 @@ def _write_scroll_slices(reader: FileReader, args, full_res_shape, io_output_typ
 def run_task(task_config, full_config):
     """Processes a single task which may contain multiple input/output pairs and formats."""
     resources = full_config.get("resources", {})
+    registry = full_config.get("outputs", {})
     io_workers = resources.get("io_workers", 4)
     memory_limit = resources.get("memory_limit", 64)
     
@@ -205,10 +206,11 @@ def run_task(task_config, full_config):
         logging.warning("No input/output pairs found for task. Skipping.")
         return
 
-    # Gather output types
-    ot_raw = task_config.get("output_type")
+    # Gather output settings
+    output_config = task_config.get("output", {})
+    ot_raw = output_config.get("type", task_config.get("output_type")) # Fallback to old key for safety
     if not ot_raw:
-        logging.error("Missing 'output_type' in task configuration.")
+        logging.error("Missing 'type' in 'output' or top-level 'output_type' in task configuration.")
         return
     output_types = [ot_raw] if isinstance(ot_raw, str) else ot_raw
 
@@ -226,8 +228,9 @@ def run_task(task_config, full_config):
             logging.error(f"Failed to initialize reader for {input_path}: {e}")
             continue
 
-        resize_shape = task_config.get("resize_shape")
+        resize_shape = output_config.get("resize_shape", task_config.get("resize_shape"))
         full_res_shape = tuple(resize_shape) if resize_shape else reader.volume_shape
+        output_dtype = output_config.get("dtype")
         
         for ot_str in output_types:
             io_output_type = TYPE_MAP.get(ot_str)
@@ -238,8 +241,17 @@ def run_task(task_config, full_config):
             logging.info(f"  Converting to: {ot_str}")
             Path(output_path).mkdir(parents=True, exist_ok=True)
 
-            chunk_size = task_config.get("chunk_size", 128)
-            chunk_tuple = (chunk_size, chunk_size, chunk_size)
+            # Merge parameters: Registry (global defaults) + Local Output Config
+            type_key = ot_str.lower()
+            type_defaults = registry.get(type_key, {})
+            type_overrides = output_config.get(type_key, {})
+            final_type_params = {**type_defaults, **type_overrides}
+
+            chunk_size = final_type_params.get("chunk_size", output_config.get("chunk_size", task_config.get("chunk_size", 128)))
+            if isinstance(chunk_size, int):
+                chunk_tuple = (chunk_size, chunk_size, chunk_size)
+            else:
+                chunk_tuple = tuple(chunk_size)
 
             class ConfigArgs:
                 def __init__(self, **entries):
@@ -247,19 +259,19 @@ def run_task(task_config, full_config):
             
             helper_args = ConfigArgs(
                 output_path=output_path,
-                chunk_size=chunk_size,
-                levels=task_config.get("levels", 5),
-                downscale_factor=task_config.get("downscale_factor", 2),
-                resize_order=task_config.get("resize_order", 0),
-                scroll_axis=task_config.get("scroll_axis", 0)
+                chunk_size=chunk_size if isinstance(chunk_size, int) else chunk_size[0], 
+                levels=final_type_params.get("levels", final_type_params.get("n_level", 5)),
+                downscale_factor=final_type_params.get("resize_factor", output_config.get("resize_factor", 2)),
+                resize_order=output_config.get("resize_order", 0),
+                scroll_axis=final_type_params.get("axis", task_config.get("scroll_axis", 0))
             )
 
             if io_output_type in ["ome-zarr", "zarr"]:
-                _write_pyramid(reader, helper_args, full_res_shape, chunk_tuple, io_output_type, io_workers=io_workers)
+                _write_pyramid(reader, helper_args, full_res_shape, chunk_tuple, io_output_type, io_workers=io_workers, output_dtype=output_dtype)
             elif io_output_type in ["single-tiff", "single-nii"]:
-                _write_single_volume(reader, helper_args, full_res_shape, io_output_type, io_workers=io_workers)
+                _write_single_volume(reader, helper_args, full_res_shape, io_output_type, io_workers=io_workers, output_dtype=output_dtype)
             elif io_output_type in ["scroll-tiff", "scroll-nii"]:
-                _write_scroll_slices(reader, helper_args, full_res_shape, io_output_type, io_workers=io_workers)
+                _write_scroll_slices(reader, helper_args, full_res_shape, io_output_type, io_workers=io_workers, output_dtype=output_dtype)
             else:
                 logging.error(f"Unsupported internal output_type: {io_output_type}")
 

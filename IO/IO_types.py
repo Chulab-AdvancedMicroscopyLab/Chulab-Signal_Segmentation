@@ -6,7 +6,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class VolumeMetadata:
-    """Describe a volume's shape, dtype, estimated size, mean, and std.
+    """Describe a volume's shape, dtype, estimated size, mean, std, min, and max.
 
     Attributes:
         shape (tuple[int,int,int]): Normalized (Z, Y, X) shape.
@@ -14,6 +14,8 @@ class VolumeMetadata:
         size_gb (float): Estimated in-memory size in GiB.
         mean (float): Mean intensity value of the volume.
         std (float): Standard deviation of intensity values of the volume.
+        min (float): Minimum intensity value of the volume.
+        max (float): Maximum intensity value of the volume.
     """
 
     shape: tuple[int, int, int]
@@ -21,6 +23,8 @@ class VolumeMetadata:
     size_gb: float
     mean: float = 0.0
     std: float = 0.0
+    min: float = 0.0
+    max: float = 0.0
 
 OUTPUT_CHOICES: tuple[str, ...] = (
     "OME-Zarr",

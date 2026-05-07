@@ -5,6 +5,7 @@ Dynamically discovers Image, GT, and Prediction triplets without hardcoded names
 import argparse
 import logging
 import re
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -12,7 +13,7 @@ import numpy as np
 import tifffile
 from tqdm import tqdm
 
-from utils.metrics import accumulate_confusion, compute_metrics
+from utils.metrics import accumulate_confusion, compute_metrics, compute_cldice, compute_object_metrics, compute_pr_auc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("analysis")
@@ -22,13 +23,13 @@ VALID_EXTS = (".tif", ".tiff")
 # Headers for the detailed data
 DETAILED_HEADERS = [
     "parent_folder", "image_folder", "model_name", "files_evaluated", "pixels_total", 
-    "tp", "fp", "fn", "tn", "accuracy", "precision", "recall", "f1"
+    "tp", "fp", "fn", "tn", "accuracy", "precision", "recall", "f1", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc", "gt_count", "pr_count"
 ]
 
 # Headers for the summary rows
 SUMMARY_HEADERS = [
     "model_name", "accuracy_mean", "accuracy_std", "precision_mean", "precision_std",
-    "recall_mean", "recall_std", "f1_mean", "f1_std"
+    "recall_mean", "recall_std", "f1_mean", "f1_std", "mcc_mean", "hausdorff_mean", "cldice_mean", "obj_f1_mean", "pr_auc_mean"
 ]
 
 def list_files(path: Path, exts: Tuple[str, ...] = VALID_EXTS) -> List[Path]:
@@ -62,10 +63,28 @@ def write_results(rows: List[Dict[str, object]], summary_rows: List[Dict[str, ob
             for r in rows: w.writerow({k: r.get(k) for k in SUMMARY_HEADERS})
         logger.info(f"Detailed results saved to {csv_path}")
 
-def evaluate_triplet(gt_dir: Path, pred_dir: Path) -> Dict[str, float]:
+def evaluate_triplet(gt_dir: Path, pred_dir: Path, metric_cfg: dict = None) -> Dict[str, float]:
+    metric_cfg = metric_cfg or {}
+    # Extract params from config
+    hd_p = metric_cfg.get("hausdorff", {}).get("hd_percentile", 95.0)
+    obj_p = metric_cfg.get("object_metrics", {})
+    min_iou = obj_p.get("min_iou", 0.5)
+    min_size = obj_p.get("min_size", 0)
+    conn = obj_p.get("connectivity", None)
+
     gt_files = list_files(gt_dir)
     tp = fp = fn = tn = 0
     file_count = 0
+    
+    # Trackers for slice-wise complex metrics
+    mcc_list = []
+    hd_list = []
+    cldice_list = []
+    obj_f1_list = []
+    prauc_list = []
+    gt_count_total = 0
+    pr_count_total = 0
+    
     for gtf in gt_files:
         prf = pred_dir / gtf.name
         if not prf.exists():
@@ -73,22 +92,64 @@ def evaluate_triplet(gt_dir: Path, pred_dir: Path) -> Dict[str, float]:
             prf = pred_dir / alt
         if not prf.exists(): continue
         try:
-            g_arr = to_binary(tifffile.imread(str(gtf)))
-            p_arr = to_binary(tifffile.imread(str(prf)))
+            g_arr_raw = tifffile.imread(str(gtf))
+            p_arr_raw = tifffile.imread(str(prf))
+            
+            g_arr = to_binary(g_arr_raw)
+            p_arr = to_binary(p_arr_raw)
+            
             if g_arr.shape != p_arr.shape: continue
+            
+            # Pixel-wise accumulation
             tp, fp, fn, tn = accumulate_confusion(tp, fp, fn, tn, g_arr, p_arr)
+            
+            # Slice-wise complex metrics
+            slice_metrics = compute_metrics(0, 0, 0, 0, g_arr, p_arr, hd_percentile=hd_p)
+            if not np.isnan(slice_metrics["mcc"]): mcc_list.append(slice_metrics["mcc"])
+            if not np.isnan(slice_metrics["hausdorff"]): hd_list.append(slice_metrics["hausdorff"])
+            
+            cldice_list.append(compute_cldice(g_arr, p_arr))
+            
+            obj_metrics = compute_object_metrics(g_arr, p_arr, min_iou=min_iou, min_size=min_size, connectivity=conn)
+            obj_f1_list.append(obj_metrics["obj_f1"])
+            gt_count_total += obj_metrics["gt_count"]
+            pr_count_total += obj_metrics["pr_count"]
+            
+            # PR-AUC uses raw scores
+            prauc = compute_pr_auc(g_arr, p_arr_raw)
+            if prauc > 0: prauc_list.append(prauc)
+            
             file_count += 1
         except Exception as e:
             logger.warning(f"Error reading {gtf.name}: {e}")
+            
     metrics = compute_metrics(tp, fp, fn, tn)
     metrics["files_evaluated"] = file_count
+    metrics["mcc"] = np.mean(mcc_list) if mcc_list else 0.0
+    metrics["hausdorff"] = np.mean(hd_list) if hd_list else 0.0
+    metrics["cldice"] = np.mean(cldice_list) if cldice_list else 0.0
+    metrics["obj_f1"] = np.mean(obj_f1_list) if obj_f1_list else 0.0
+    metrics["pr_auc"] = np.mean(prauc_list) if prauc_list else 0.0
+    metrics["gt_count"] = gt_count_total
+    metrics["pr_count"] = pr_count_total
+    
     return metrics
 
 def main():
     parser = argparse.ArgumentParser(description="Robustly evaluate masks.")
     parser.add_argument("--base_dir", type=str, required=True, help="Root directory to search")
     parser.add_argument("--output_name", type=str, default="evaluation_report", help="Output filename")
+    parser.add_argument("--config", type=str, default=None, help="Path to config file for metric parameters")
     args = parser.parse_args()
+
+    metric_cfg = {}
+    if args.config:
+        try:
+            with open(args.config, "r") as f:
+                metric_cfg = json.load(f).get("metrics", {})
+            logger.info(f"Loaded metric configuration from {args.config}")
+        except Exception as e:
+            logger.warning(f"Failed to load config: {e}. Using defaults.")
 
     root = Path(args.base_dir).resolve()
     all_results = []
@@ -132,7 +193,7 @@ def main():
                 # Fallback: just remove prefix and suffix
                 model_name = p_name.replace(img_dir.name, "").replace("_mask.scroll-tif", "").strip("_")
             
-            metrics = evaluate_triplet(gt_dir, p_dir)
+            metrics = evaluate_triplet(gt_dir, p_dir, metric_cfg=metric_cfg)
             if metrics["files_evaluated"] > 0:
                 all_results.append({
                     "parent_folder": parent.name,
@@ -147,7 +208,7 @@ def main():
     # Horizontal Summary Aggregation
     model_names = sorted(set(r["model_name"] for r in all_results))
     summary_rows = []
-    metrics_to_agg = ["accuracy", "precision", "recall", "f1"]
+    metrics_to_agg = ["accuracy", "precision", "recall", "f1", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc"]
     
     for m_name in model_names:
         m_results = [r for r in all_results if r["model_name"] == m_name]

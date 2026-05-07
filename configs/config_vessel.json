@@ -1,0 +1,80 @@
+{
+    "resources": {
+        "numba_threads": 16,
+        "max_dask_threads": 16,
+        "io_workers": 8,
+        "memory_limit": 64
+    },
+    "normalization": {
+        "z-score": { "std_multiplier": 1.0 },
+        "histogram": { "bins": 1024 }
+    },
+    "outputs": {
+        "zarr": { "chunk_size": [128, 128, 128] },
+        "ome-zarr": {
+            "n_level": 5,
+            "resize_factor": 2,
+            "chunk_size": [128, 128, 128]
+        },
+        "scroll-tif": { "axis": 0 }
+    },
+    "train": {
+        "device": "cuda:1",
+        "data_path": ["/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Tumor_CD31/training-data/I-AN-3D"],
+        "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin",
+        "model_name": "Swin_UNETR_v2",
+        "model_type": "swin_unetr",
+        "input_name": "images",
+        "mask_name": "images_mask",
+        "preprocess": { 
+            "method": "histogram", 
+            "sample_rate": 1.0,
+            "low_cut": null,
+            "high_cut": null
+        },
+        "loss": { "dice": 0.7, "focal": 0.3 },
+        "metrics": ["dice_soft", "dice_hard", "iou", "mcc", "cldice", "pr_auc"],
+        "training_epochs": 100,
+        "training_batch_size": 8,
+        "training_num_workers": 8,
+        "training_patch_size": [64, 64, 64],
+        "training_overlay": [0, 0, 0],
+        "training_neg_keep_ratio": 1.0,
+        "training_resize_factor": [1.0, 1.0, 1.0],
+        "learning_rate": 1e-4,
+        "visualize_preview": true
+    },
+    "inference": {
+        "device": "cuda:1",
+        "input_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor/20260310_12_24_43_PC25J0006_ctrl_3_tumor_CD31_640_4x_z2_Destripe_DONE",
+        "input_name": "All_Channels_test",
+        "output_name": "All_Channels_test_mask",
+        "preprocess": { 
+            "method": "histogram",
+            "low_cut": null,
+            "high_cut": null
+        },
+        "batch_size": 16,
+        "inference_patch_size": [64, 64, 64],
+        "inference_overlay": [16, 16, 16],
+        "inference_resize_factor": [1.0, 1.0, 1.0],
+        "output": {
+            "type": "Scroll-Tif",
+            "dtype": "uint16",
+            "resize_order": 0,
+            "scroll-tif": { "axis": 1 }
+        }
+    },
+    "converter": [
+        {
+            "input_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor/20260310_12_24_43_PC25J0006_ctrl_3_tumor_CD31_640_4x_z2_Destripe_DONE/20260414_Tumor_mask_test_PC25J0006_ctrl_3-1_shrink_anno.tif",
+            "output_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor/20260310_12_24_43_PC25J0006_ctrl_3_tumor_CD31_640_4x_z2_Destripe_DONE",
+            "output": {
+                "type": "OME-Zarr",
+                "dtype": "uint16",
+                "resize_shape": [3030, 7254, 5564],
+                "resize_order": 0
+            }
+        }
+    ]
+}

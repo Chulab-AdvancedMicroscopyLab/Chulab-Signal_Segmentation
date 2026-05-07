@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import logging
 import os
 from dataclasses import dataclass
@@ -14,7 +13,6 @@ from IO.reader import FileReader
 from utils.cropper import PatchSlice, generate_patch_indices, filter_indices_by_mask, extract_data_from_indices
 
 logger = logging.getLogger(__name__)
-
 @dataclass(frozen=True)
 class PatchMetadata:
     """Metadata for a single patch.
@@ -84,6 +82,7 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
     @classmethod
     def from_folders(
         cls,
+        full_config: dict,
         image_root: Union[str, List[str]],
         mask_root: Union[str, List[str]],
         patch_size: Tuple[int, int, int],
@@ -92,9 +91,10 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         neg_keep_ratio: float = 1.0,
         input_name: str = "Flatten_561",
         mask_name: str = "Flatten_561_mask",
-        io_workers: int = 4,
-        stats_sample_rate: float = 1.0
+        io_workers: int = 4
     ):
+        from utils.normalization import build_normalizer_from_config
+
         all_image_patches = []
         all_mask_patches = []
         
@@ -108,6 +108,13 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
                 image_roots = image_roots * len(mask_roots)
             else:
                 raise ValueError("image_root and mask_root lists must have the same length.")
+
+        train_config = full_config.get("train", {})
+        preprocess_config = train_config.get("preprocess", {})
+        low_cut = preprocess_config.get("low_cut")
+        high_cut = preprocess_config.get("high_cut")
+        sample_rate = preprocess_config.get("sample_rate", 1.0)
+        method = preprocess_config.get("method", "z-score")
 
         volumes_found = []
         for img_root, msk_root in zip(image_roots, mask_roots):
@@ -125,8 +132,16 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         for img_path, msk_path in sorted(volumes_found):
             v_display_name = f"{img_path.parent.name}/{img_path.name}"
             
-            img_reader = FileReader(img_path, io_workers=io_workers, compute_stats=True, stats_sample_rate=stats_sample_rate)
-            img_data = img_reader.read()
+            img_reader = FileReader(
+                img_path, 
+                io_workers=io_workers, 
+                compute_stats=True, 
+                stats_sample_rate=sample_rate,
+                low_cut=low_cut,
+                high_cut=high_cut,
+                compute_histogram=(method == "histogram")
+            )
+            img_data = img_reader.read(out_dtype=np.float32)
             
             # Check if padding is needed
             current_shape = img_data.shape
@@ -144,10 +159,12 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
                 logger.info(f"Volume {v_display_name}: Padded from {current_shape} to {padded_shape} to fit patch size {patch_size}")
                 img_data = np.pad(img_data, pad_width, mode='constant', constant_values=0)
                 
-            img_data = (img_data - img_reader.volume_mean) / (img_reader.volume_std + 1e-8)
+            # Apply Normalization
+            normalizer = build_normalizer_from_config(full_config, img_reader, mode="train")
+            img_data = normalizer(img_data)
             
             msk_reader = FileReader(msk_path, io_workers=io_workers)
-            msk_data = msk_reader.read().astype(np.float32)
+            msk_data = msk_reader.read(out_dtype=np.float32)
             
             if needs_padding:
                 msk_data = np.pad(msk_data, pad_width, mode='constant', constant_values=0)
@@ -224,18 +241,22 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
     """
     def __init__(
         self,
+        full_config: dict,
         image_reader: FileReader,
         z_range: Tuple[int, int],
         patch_size: Tuple[int, int, int],
         overlap: Tuple[int, int, int],
         transform: Optional[Callable] = None,
     ):
+        from utils.normalization import build_normalizer_from_config
+
         z_start, z_end = z_range
-        # 1. Read the full window
-        img_data = image_reader.read(z_start=z_start, z_end=z_end).astype(np.float32)
+        # 1. Read the full window (optimized parallel load + conversion)
+        img_data = image_reader.read(z_start=z_start, z_end=z_end, out_dtype=np.float32)
         
         # 2. Global normalization
-        image_reader.normalize_inplace(img_data)
+        normalizer = build_normalizer_from_config(full_config, image_reader, mode="inference")
+        normalizer(img_data)
         
         # 3. Generate geometry
         raw_indices = generate_patch_indices(img_data.shape, patch_size, overlap, z_offset=z_start)
@@ -261,7 +282,7 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
             is_patch_mode=True
         )
 
-def load_train_dataset_from_config(
+def build_train_dataset_from_config(
     full_config: dict, 
     train_transform: Optional[Callable] = None, 
     val_transform: Optional[Callable] = None
@@ -285,10 +306,10 @@ def load_train_dataset_from_config(
     neg_ratio = config.get("training_neg_keep_ratio", 1.0)
     val_ratio = config.get("val_ratio", 0.3)
     seed = config.get("seed", 42)
-    stats_sample_rate = config.get("stats_sample_rate", 1.0)
 
     logger.info(f"Loading training data from {img_root}...")
     full_dataset = TrainMicroscopyDataset.from_folders(
+        full_config=full_config,
         image_root=img_root,
         mask_root=mask_root,
         patch_size=patch_size,
@@ -296,8 +317,7 @@ def load_train_dataset_from_config(
         neg_keep_ratio=neg_ratio,
         input_name=config.get("input_name", "images"),
         mask_name=config.get("mask_name", "images_mask"),
-        io_workers=io_workers,
-        stats_sample_rate=stats_sample_rate
+        io_workers=io_workers
     )
 
     return full_dataset.split(
