@@ -86,7 +86,7 @@
         "device": "cuda:0",
         "data_path": ["/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Tumor_CD31/training-data/I-AN-3D"],
         "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin",
-        "model_name": "Swin_UNETR_v2",
+        "model_name": "Swin_UNETR_v3",
         "model_type": "swin_unetr",
         "input_name": "images",
         "mask_name": "images_mask",

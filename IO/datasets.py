@@ -154,11 +154,6 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
                 else:
                     pad_width.append((0, 0))
             
-            if needs_padding:
-                padded_shape = tuple(max(current_shape[i], patch_size[i]) for i in range(3))
-                logger.info(f"Volume {v_display_name}: Padded from {current_shape} to {padded_shape} to fit patch size {patch_size}")
-                img_data = np.pad(img_data, pad_width, mode='constant', constant_values=0)
-                
             # Apply Normalization
             normalizer = build_normalizer_from_config(full_config, img_reader, mode="train")
             img_data = normalizer(img_data)
@@ -167,6 +162,9 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             msk_data = msk_reader.read(out_dtype=np.float32)
             
             if needs_padding:
+                padded_shape = tuple(max(current_shape[i], patch_size[i]) for i in range(3))
+                logger.info(f"Volume {v_display_name}: Padded from {current_shape} to {padded_shape} to fit patch size {patch_size}")
+                img_data = np.pad(img_data, pad_width, mode='constant', constant_values=0)
                 msk_data = np.pad(msk_data, pad_width, mode='constant', constant_values=0)
             
             indices = generate_patch_indices(img_data.shape, patch_size, overlap)

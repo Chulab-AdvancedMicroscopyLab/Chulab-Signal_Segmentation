@@ -26,7 +26,7 @@
             "chunk_size": [128, 128, 128]
         },
         "scroll-tiff": {
-            "axis": 0
+            "axis": 1
         },
         "single-tiff": {}
     },
@@ -136,12 +136,62 @@
     },
     "converter": [
         {
-            "input_path": "/mnt/DAS218T/Ian_Huang/project_20260224_Shaun_BV/20260224_15_11_41_PC25J0003_ctrl_2_brain_PI_561_cFOS_640_4x_z4_Destripe_DONE/Ex_640_Em_690-50_Ch3_stitched_annotation.tif",
-            "output_path": "/mnt/DAS218T/Ian_Huang/project_20260224_Shaun_BV/20260224_15_11_41_PC25J0003_ctrl_2_brain_PI_561_cFOS_640_4x_z4_Destripe_DONE",
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_51/Ex_561_Em_600_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_51",
             "output": {
-                "type": "Zarr",
+                "type": "Scroll-Tiff",
                 "dtype": "uint16",
-                "resize_shape": [2174, 10106, 7345],
+                "resize_shape": null,
+                "resize_order": 0
+            }
+        },
+        {
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_51/Ex_647_Em_690_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_51",
+            "output": {
+                "type": "Scroll-Tiff",
+                "dtype": "uint16",
+                "resize_shape": null,
+                "resize_order": 0
+            }
+        },
+        {
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_54/Ex_561_Em_600_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_54",
+            "output": {
+                "type": "Scroll-Tiff",
+                "dtype": "uint16",
+                "resize_shape": null,
+                "resize_order": 0
+            }
+        },
+        {
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_54/Ex_647_Em_690_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_54",
+            "output": {
+                "type": "Scroll-Tiff",
+                "dtype": "uint16",
+                "resize_shape": null,
+                "resize_order": 0
+            }
+        },
+        {
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_55/Ex_561_Em_600_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_55",
+            "output": {
+                "type": "Scroll-Tiff",
+                "dtype": "uint16",
+                "resize_shape": null,
+                "resize_order": 0
+            }
+        },
+        {
+            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_55/Ex_647_Em_690_stitched.zarr",
+            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_55",
+            "output": {
+                "type": "Scroll-Tiff",
+                "dtype": "uint16",
+                "resize_shape": null,
                 "resize_order": 0
             }
         }
