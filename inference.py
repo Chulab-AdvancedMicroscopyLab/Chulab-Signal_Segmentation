@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Batch volume inference with a synchronized Disk Manager pipeline.
 
@@ -9,7 +10,6 @@ Architecture:
 import warnings
 # Suppress the cuda.cudart module deprecation warning (must be done before other imports)
 warnings.filterwarnings("ignore", category=FutureWarning, module="cuda")
-
 import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -93,6 +93,7 @@ def run_inference(model: torch.nn.Module, loader: DataLoader, device: torch.devi
         return outputs
 
 def disk_manager_worker(
+    full_config: dict,
     data_reader: FileReader,
     data_writer: FileWriter,
     z_plan: List[Tuple[int, int]],
@@ -113,17 +114,14 @@ def disk_manager_worker(
     try:
         # Loop through the plan: Load N, then wait for results of N and Write N.
         # To maximize sequential IO, we want to Read N+1 while GPU is busy with N.
-        # But wait, the user wants: Write N-1 THEN Read N+1 while GPU is busy with N.
+        # But wait, the user wants: Write i-1 THEN Read i+1 while GPU is busy with i.
         
         for i, (z_start, z_overlay_actual) in enumerate(z_plan):
             z_end = min(z_start + patch_size[0], volume_shape[0])
             
             # 1. READ Chunk i
-            # If i > 0, this happens while GPU is busy with i-1. 
-            # BUT the user wants Write i-2 to happen BEFORE Read i.
-            # (Note: i is the current chunk being loaded)
-            
             dataset = InferenceMicroscopyDataset(
+                full_config=full_config,
                 image_reader=data_reader,
                 z_range=(z_start, z_end),
                 patch_size=patch_size,
@@ -153,6 +151,7 @@ def disk_manager_worker(
                     z_overlay=res_z_overlay,
                     prev_z_slices=prev_z_slices,
                     resize_factor=resize_factor,
+                    output_dtype=data_writer.output_dtype
                 )
                 data_writer.write(stitched_volume, z_start=res_z_start, z_end=res_z_start+stitched_volume.shape[0])
                 stitch_queue.task_done()
@@ -173,6 +172,7 @@ def disk_manager_worker(
                 z_overlay=0, 
                 prev_z_slices=prev_z_slices,
                 resize_factor=resize_factor,
+                output_dtype=data_writer.output_dtype
             )
             data_writer.write(stitched_volume, z_start=res_z_start, z_end=res_z_start+stitched_volume.shape[0])
             stitch_queue.task_done()
@@ -191,26 +191,51 @@ def disk_manager_worker(
 def process_volume(volume_path: Path, output_dir: Path, output_name: str, model: torch.nn.Module, device: torch.device, full_config: dict):
     """Processes a volume using sequential loading/inference and async stitching."""
     config = full_config.get("inference", {})
+    preprocess_config = config.get("preprocess", {})
+    output_config = config.get("output", {})
+    registry = full_config.get("outputs", {})
     resources = full_config.get("resources", {})
     io_workers = resources.get("io_workers", 4)
 
+    method = preprocess_config.get("method", "z-score")
     data_reader = FileReader(
-        volume_path, 
-        io_workers=io_workers, 
-        compute_stats=True, 
-        stats_sample_rate=config.get("stats_sample_rate", 0.1)
+        volume_path,
+        io_workers=io_workers,
+        compute_stats=True,
+        stats_sample_rate=preprocess_config.get("sample_rate", 1.0),
+        low_cut=preprocess_config.get("low_cut"),
+        high_cut=preprocess_config.get("high_cut"),
+        compute_histogram=(method == "histogram")
     )
-    os.makedirs(output_dir, exist_ok=True)
     
-    output_type_str = config.get("output_type", "Scroll-Tif")
+    os.makedirs(output_dir, exist_ok=True)
+    output_type_str = output_config.get("type", "Scroll-Tiff")
     output_type = TYPE_MAP.get(output_type_str, output_type_str)
+    
+    # Merge parameters: Registry (global defaults) + Local Output Config
+    # Use the unified internal type for registry lookup
+    type_key = output_type
+    type_defaults = registry.get(type_key, {})
+    type_overrides = output_config.get(type_key, {})
+    
+    # Final params for the specific output type
+    final_type_params = {**type_defaults, **type_overrides}
+    
+    # For OME-Zarr/Zarr: extract n_level, chunk_size, and resize_factor
+    n_level = final_type_params.get("n_level", final_type_params.get("levels", 5))
+    resize_factor = final_type_params.get("resize_factor", output_config.get("resize_factor", 2))
+    chunk_size = final_type_params.get("chunk_size", [128, 128, 128])
+    if isinstance(chunk_size, int):
+        chunk_size = (chunk_size, chunk_size, chunk_size)
     
     data_writer = FileWriter(
         output_path=output_dir, output_name=output_name, output_type=output_type,
-        output_dtype=config.get("output_dtype", "uint16"),
+        output_dtype=output_config.get("dtype", "uint16"),
         full_res_shape=data_reader.volume_shape, file_name=data_reader.volume_files,
-        chunk_size=tuple(config.get("output_chunk_size", [128, 128, 128])),
-        resize_factor=config.get("output_resize_factor", 2),
+        chunk_size=tuple(chunk_size),
+        n_level=n_level,
+        resize_factor=resize_factor,
+        resize_order=output_config.get("resize_order", 0),
         io_workers=io_workers,
     )
     
@@ -222,15 +247,17 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
     
     inf_queue = queue.Queue(maxsize=1)
     stitch_queue = queue.Queue(maxsize=1)
-    
     disk_thread = threading.Thread(
         target=disk_manager_worker,
-        args=(data_reader, data_writer, z_plan, patch_size, overlay_3d,
-              config.get("inference_resize_factor", [1.0, 1.0, 1.0]), 
-              inf_queue, stitch_queue, output_type),
-        daemon=True
+        args=(
+            full_config, data_reader, data_writer, z_plan, patch_size, overlay_3d, 
+            config.get("inference_resize_factor", [1.0, 1.0, 1.0]),
+            inf_queue, stitch_queue, output_type
+        )
     )
     disk_thread.start()
+
+    import time
 
     while True:
         inf_data = inf_queue.get()

@@ -86,6 +86,7 @@ def write_chunk_to_zarr(array: np.ndarray, chunk_shape: tuple[int, int, int], ta
         target[dest_region] = array[z0:z1, y0:y1, x0:x1]
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        logger.info(f"Writing block of shape {array.shape} to Zarr")
         for z in range(0, dz, cz):
             for y in range(0, dy, cy):
                 for x in range(0, dx, cx):

@@ -222,7 +222,7 @@ class FileWriter:
     def _write_ome_zarr(self, array: np.ndarray, z0: int, z1: int, y0: int, y1: int, x0: int, x1: int) -> None:
         """Write data into the root OME-Zarr level."""
         target = self.store_group['0']
-        write_chunk_to_zarr(array, self.chunk_size, target,
+        write_chunk_to_zarr(array.astype(self.output_dtype), self.chunk_size, target,
             (
                 slice(z0, z1),
                 slice(y0, y1),
@@ -233,7 +233,7 @@ class FileWriter:
 
     def _write_zarr(self, array: np.ndarray, z0: int, z1: int, y0: int, y1: int, x0: int, x1: int) -> None:
         """Write data into a flat Zarr array target."""
-        write_chunk_to_zarr(array, self.chunk_size, self.store_array,
+        write_chunk_to_zarr(array.astype(self.output_dtype), self.chunk_size, self.store_array,
             (
                 slice(z0, z1),
                 slice(y0, y1),
@@ -245,12 +245,12 @@ class FileWriter:
     def _write_single_tiff(self, array: np.ndarray, z0: int, z1: int, *_: int) -> None:
         """Persist the supplied block as a multi-page TIFF file."""
         output_path = self.output_path / f"{self.output_name}_z{z0}-{z1}.tiff"
-        tifffile.imwrite(output_path, array.astype(self.output_dtype), imagej=True, maxworkers=self.io_workers)
+        tifffile.imwrite(output_path, array.astype(self.output_dtype), maxworkers=self.io_workers)
 
     def _write_scroll_tiff(self, array: np.ndarray, z0: int, z1: int, *_: int) -> None:
         """Write per-slice TIFF files for scroll outputs."""
         for idx, file_path in enumerate(self.output_file_path[z0:z1]):
-            tifffile.imwrite(file_path, array[idx].astype(self.output_dtype), imagej=True, maxworkers=self.io_workers)
+            tifffile.imwrite(file_path, array[idx].astype(self.output_dtype), maxworkers=self.io_workers)
 
     def _write_single_nii(self, array: np.ndarray, z0: int, z1: int, *_: int) -> None:
         """Persist a full NIfTI volume covering the requested range."""
@@ -331,7 +331,7 @@ class FileWriter:
 
     def _initialize_scroll_tiff(self) -> None:
         """Prepare paths for per-slice TIFF scroll outputs."""
-        self.output_path = self.output_path / f"{self.output_name}.scroll-tif"
+        self.output_path = self.output_path / f"{self.output_name}.scroll-tiff"
         self.output_path.mkdir(parents=True, exist_ok=True)
 
         self.output_file_path = [self.output_path / f"{name.stem}.tiff" for name in self.file_name]

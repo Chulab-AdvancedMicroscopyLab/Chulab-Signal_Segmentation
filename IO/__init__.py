@@ -10,7 +10,7 @@ from .datasets import (
     BaseMicroscopyDataset, 
     TrainMicroscopyDataset, 
     InferenceMicroscopyDataset,
-    load_train_dataset_from_config
+    build_train_dataset_from_config
 )
 from .IO_types import OUTPUT_CHOICES, TYPE_MAP, VALID_SUFFIXES, VolumeMetadata
 
@@ -20,7 +20,7 @@ __all__ = [
     "BaseMicroscopyDataset",
     "TrainMicroscopyDataset",
     "InferenceMicroscopyDataset",
-    "load_train_dataset_from_config",
+    "build_train_dataset_from_config",
     "OUTPUT_CHOICES",
     "TYPE_MAP",
     "VALID_SUFFIXES",

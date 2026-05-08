@@ -4,21 +4,25 @@ High-performance 2D/3D microscopy image segmentation using MONAI, PyTorch, and S
 
 ## Features
 
+- **SwinUNETR Support:** State-of-the-art Transformer-based encoder for 3D segmentation, fully integrated with padding safety.
+- **Automatic Model Padding:** Ensures all input patches are at least the size of `patch_size` and their dimensions are divisible by 32 (required for SwinUNETR/Transformer models).
 - **Numba Acceleration:** High-performance JIT-compiled algorithms for 3D patch cropping, mask filtering, and volume stitching.
-- **Shared Memory:** Utilizes `torch.multiprocessing` to prevent RAM duplication across workers, critical for large volumes on Windows.
+- **Shared Memory:** Utilizes `torch.multiprocessing` to prevent RAM duplication across workers, critical for large volumes.
 - **Asynchronous Pipeline:** Optimized inference using a synchronized Disk Manager thread to maximize sequential I/O speed.
 - **Pre-Packed Patches:** Zero-computation inference workers by pre-cropping patches into shared contiguous tensors.
-- **Hybrid Loss:** Focal + Tversky loss to handle extreme class imbalance in sparse microscopy signals.
-- **Global Normalization:** Automatic volume-level Z-score normalization using calculated metadata.
+- **Hybrid Loss:** Focal + Tversky + Dice loss combinations to handle extreme class imbalance in sparse microscopy signals.
+- **Intensity Normalization:** Support for Z-score, Min-Max, and Global Histogram Equalization via `preprocess.py` and reader integration.
+- **16-bit Logic:** Optimized for 16-bit (uint16) microscopy data with automatic scaling for visualization (65535 for foreground).
 
 ## Structure
 
+- `preprocess.py`: Configuration-driven intensity normalization (Z-score, Min-Max, Histogram).
 - `train.py`: Main training script with functional epoch handlers.
 - `inference.py`: Optimized batch inference script with async Disk Manager.
 - `converter.py`: Utility for format conversion (OME-Zarr, Zarr, Tiff, Nifti).
 - `analysis.py`: Metrics calculation (F1, Precision, Recall) against Ground Truth.
 - `IO/`: Unified readers, writers, and shared-memory dataset classes.
-- `models/`: Model architecture (U-Net) and factory.
+- `models/`: Model architecture factory (UNet, AttentionUNet, SwinUNETR, VNet).
 - `utils/`: Numba-optimized stitcher, patch cropper, and visualization tools.
 
 ## Installation
@@ -37,139 +41,56 @@ High-performance 2D/3D microscopy image segmentation using MONAI, PyTorch, and S
    ```
    *Note: `numba` is used for high-speed JIT acceleration.*
 
-## Docker Workflow
+4. Make scripts executable (Linux):
+   ```bash
+   chmod +x *.py
+   ```
 
-The repo includes a GPU-enabled Docker runner:
-- Build and run: `python run_docker.py`
-- This mounts `./datas` to `/workspace/datas` and provides an interactive bash shell.
+## Preprocessing
 
-## Data Layout
-
-Training and Inference expect volumes organized in subfolders. Standard folders like `Flatten_561` or `images` are automatically discovered.
-
-```
-datas/
-  dataset_name/
-    volume_01/
-      Flatten_561/      # Raw images
-      Flatten_561_mask/ # Binary masks (detected)
-    volume_02/
-      Flatten_561/      # Raw images
-      Flatten_561_mask/ # Binary masks (detected)
-    volume_02/
-      Flatten_647/      # Raw images
-      Flatten_647_mask/ # Binary masks (ignored)
+Before training or inference, you can normalize your volume intensities:
+```bash
+python preprocess.py --input /path/to/raw --output /path/to/norm --config configs/config.json --mode inference
 ```
 
 ## Configuration Guide
 
-The behavior of all scripts is controlled via a central `configs/config.json` file. The configuration is divided into sections for each task.
+The behavior of all scripts is controlled via a central `configs/config.json` file. 
 
 ### 1. Global Resources (`resources`)
-Settings that affect system-wide performance and concurrency.
 - `numba_threads`: Number of threads for JIT-accelerated operations (default: 8).
-- `dask_threads`: Number of threads for Dask-based I/O (default: 4).
 - `io_workers`: Number of background workers for file reading/writing (default: 4).
 - `memory_limit`: Soft memory limit in GB to avoid OOM during large volume reads.
 
-### 2. Format Converter (`converter`)
-Configuration for `converter.py`. Can be a single dictionary or a list of tasks.
-- `input_path`: Path to the source volume or directory.
-- `output_path`: Directory for converted output.
-- `output_type`: Target format(s). Options: `ome-zarr`, `zarr`, `single-tiff`, `scroll-tiff`, `single-nii`, `scroll-nii`.
-- `scroll_axis`: Axis for per-slice exports. `0-2` for forward (Z, Y, X), `3-5` for reverse (-Z, -Y, -X).
-- `transpose`: Optional axis permutation (e.g., `[1, 0, 2]`).
-- `resize_shape`: Optional (Z, Y, X) shape for resizing during conversion.
-- `chunk_size`: Internal chunking for Zarr/OME-Zarr (default: 128).
-- `levels`: Number of pyramid levels for OME-Zarr (default: 5).
+### 2. Normalization (`normalization`)
+Global defaults for intensity normalization:
+- `z-score`: `std_multiplier` (default: 1.0).
+- `histogram`: `bins` (default: 1024).
+- `min-max`: (no parameters required).
 
-### 3. Model Architecture (`model`)
-Used by both training and inference.
-- `type`: Model class name (e.g., `UNet`).
-- `in_channels`: Input channels (usually 1).
-- `out_channels`: Output classes (usually 1 for binary).
-- `features`: List of feature counts per level (e.g., `[32, 64, 128, 256]`).
+### 3. Format Converter (`converter`)
+- `output_type`: Target format(s). Options: `OME-Zarr`, `Zarr`, `Tiff`, `Nifti`, `Scroll-Tiff`, `Scroll-Nifti`.
+- `scroll_axis`: Axis for per-slice exports. `0-2` for forward, `3-5` for reverse.
 
-### 4. Training (`train`)
-Configuration for `train.py`.
-- `img_path`: Root directory containing raw training volumes.
-- `mask_path`: Root directory containing ground truth masks.
-- `input_name`: Name of the subfolder containing raw slices (default: `Flatten_561`).
-- `mask_name`: Name of the subfolder containing mask slices (default: `Flatten_561_mask`).
-- `training_patch_size`: (Z, Y, X) size of patches extracted for training.
-- `training_epochs`: Number of epochs to train (default: 30).
-- `training_batch_size`: Batch size per step (default: 8).
-- `learning_rate`: Initial learning rate (default: 1e-4).
-- `val_ratio`: Fraction of volumes held out for validation (default: 0.3).
-- `training_neg_keep_ratio`: Probability of keeping a patch that contains no foreground signal (0.0 to 1.0).
+### 4. Model Architecture (`model`)
+- `swin_unetr`: feature_size=48, spatial_dims=3.
+- `attention_unet`: channels=[32, 64, 128, 256, 512].
+- `unet`: standard MONAI UNet configuration.
 
-### 5. Inference (`inference`)
-Configuration for `inference.py`.
-- `input_path`: Root directory to scan for volumes.
-- `input_name`: Subfolder name to trigger inference on (e.g., `Flatten_561`).
-- `output_path`: Directory where results will be saved, mimicking the input structure.
-- `output_type`: Format for saved inference masks (e.g., `scroll-tiff`).
-- `model_path`: Path to the `.pth` model checkpoint.
-- `inference_patch_size`: (Z, Y, X) window size for sliding inference.
-- `inference_overlay`: (Z, Y, X) overlap between windows to prevent edge artifacts.
-- `batch_size`: Number of patches processed by GPU in parallel.
+### 5. Training (`train`)
+- `preprocess`: `method` ("z-score", "min-max", "histogram"), `low_cut`, `high_cut`.
+- `training_patch_size`: [64, 64, 64]. *Note: Will be automatically padded if not divisible by 32.*
 
-## Full Example `config.json`
-
-```json
-{
-  "resources": {
-    "numba_threads": 8,
-    "io_workers": 4
-  },
-  "model": {
-    "type": "UNet",
-    "in_channels": 1,
-    "out_channels": 1,
-    "features": [32, 64, 128, 256]
-  },
-  "train": {
-    "img_path": "./datas/training",
-    "mask_path": "./datas/training",
-    "training_patch_size": [1, 256, 256],
-    "training_epochs": 50,
-    "training_neg_keep_ratio": 0.05
-  },
-  "inference": {
-    "input_path": "./datas/inference",
-    "input_name": "Flatten_561",
-    "output_path": "./output",
-    "output_type": "scroll-tiff",
-    "model_path": "./weights/best_model.pth",
-    "inference_patch_size": [1, 512, 512],
-    "inference_overlay": [0, 64, 64]
-  }
-}
-```
-
-## Training
-
-Configure `configs/config.json` and run:
-```bash
-python train.py --config configs/config.json
-```
-Outputs are organized into:
-- `visualization/`: Dataset previews and periodic validation results.
-- `weights/`: Best and epoch-named `.pth` checkpoints.
-- `artifacts/`: Training logs, learning curves, and a copy of the model architecture used.
-
-## Inference
-
-High-speed windowed inference for massive volumes:
-```bash
-python inference.py --config configs/config.json
-```
-The script automatically discovers all `input_name` directories and maintains the folder structure in the `output_path`.
+### 6. Inference (`inference`)
+- `output`: `type` ("Scroll-Tiff", "Zarr", etc.), `dtype` ("uint16", "uint8").
+- `inference_patch_size`: [64, 64, 64]. 
+- `inference_overlay`: [16, 16, 16]. 
+- `batch_size`: patch count processed by GPU at once.
 
 ## Evaluation
 
 Calculate metrics against Ground Truth:
 ```bash
-python analysis.py --base_dir ./datas/path/to/results --gt_name Flatten_561_mask --pred_prefix Flatten_561_mask_
+python analysis.py --base_dir ./datas/path/to/results --gt_name images_mask --pred_prefix images_mask_
 ```
-Outputs a `metrics.xlsx` (or `.csv`) with detailed performance statistics.
+Outputs a `metrics.xlsx` with detailed performance statistics.

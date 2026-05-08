@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Train a 2D/3D U-Net-style segmentation model on microscopy data using shared memory.
 """
@@ -27,27 +28,19 @@ from monai.transforms.intensity.dictionary import (
 from monai.transforms.post.dictionary import AsDiscreted
 from monai.data.dataloader import DataLoader
 
-from IO import load_train_dataset_from_config
+from IO import build_train_dataset_from_config
 from models import build_model_from_config
 from utils.visualization import visualize_dataset, visualize_predictions
-from utils.metrics import dice_score, bce_score, hard_dice_score
+from utils.metrics import build_metrics_from_config
 from utils.plot import save_learning_curves
 from utils.concurrency import initialize_concurrency
+from utils.loss import build_loss_from_config
 
 # Initialize logging
 logger = logging.getLogger(__name__)
 
-# Metrics Configuration
-MetricFn = Callable[[torch.Tensor, torch.Tensor], Union[torch.Tensor, float]]
-METRICS_TO_COMPUTE: Dict[str, MetricFn] = {
-    "dice_soft": lambda outputs, targets: dice_score(outputs, targets, from_logits=True),
-    "dice_hard": lambda outputs, targets: hard_dice_score(outputs, targets, from_logits=True),
-    "bce_score": lambda outputs, targets: bce_score(outputs, targets, from_logits=True),
-}
-
 # Transforms
 train_transform = Compose([
-    NormalizeIntensityd(keys=["image"], dtype=torch.float32),
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
     # GaussianSmoothd(keys=["mask"], sigma=0.1),
     AsDiscreted(keys=["mask"], threshold=0.5),
@@ -60,7 +53,6 @@ train_transform = Compose([
 ])
 
 val_transform = Compose([
-    NormalizeIntensityd(keys=["image"], dtype=torch.float32),
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
     # GaussianSmoothd(keys=["mask"], sigma=0.1),
     AsDiscreted(keys=["mask"], threshold=0.5),
@@ -76,6 +68,8 @@ def train_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
+    criterion: torch.nn.Module,
+    metrics: Dict[str, torch.nn.Module],
     device: torch.device,
     epoch: int,
     max_grad_norm: Optional[float] = None
@@ -84,7 +78,7 @@ def train_epoch(
     model.train()
     desc = f"Training Epoch {epoch+1}"
     
-    metric_sums: Dict[str, float] = {m: 0.0 for m in METRICS_TO_COMPUTE.keys()}
+    metric_sums: Dict[str, float] = {m: 0.0 for m in metrics.keys()}
     total_loss = 0.0
     n_batches = max(1, len(loader))
 
@@ -100,7 +94,7 @@ def train_epoch(
 
         optimizer.zero_grad(set_to_none=True)
         outputs = model(images)
-        loss_val = model.get_loss(outputs, masks)
+        loss_val = criterion(outputs, masks)
         loss_val.backward()
         
         # Gradient Clipping
@@ -113,7 +107,7 @@ def train_epoch(
         total_loss += batch_loss
         
         current_metrics = {"loss": batch_loss}
-        for name, fn in METRICS_TO_COMPUTE.items():
+        for name, fn in metrics.items():
             try:
                 v = fn(outputs, masks)
                 val = float(v.item()) if isinstance(v, torch.Tensor) else float(v)
@@ -124,13 +118,15 @@ def train_epoch(
         progress.set_postfix({k: f"{v:.4f}" for k, v in current_metrics.items()})
 
     results = {"loss": total_loss / n_batches}
-    for m in METRICS_TO_COMPUTE.keys():
+    for m in metrics.keys():
         results[m] = metric_sums[m] / n_batches
     return results
 
 def valid_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
+    criterion: torch.nn.Module,
+    metrics: Dict[str, torch.nn.Module],
     device: torch.device,
     epoch: int,
     viz_path: Optional[str] = None,
@@ -140,7 +136,7 @@ def valid_epoch(
     model.eval()
     desc = f"Validating Epoch {epoch+1}"
     
-    metric_sums: Dict[str, float] = {m: 0.0 for m in METRICS_TO_COMPUTE.keys()}
+    metric_sums: Dict[str, float] = {m: 0.0 for m in metrics.keys()}
     total_loss = 0.0
     n_batches = max(1, len(loader))
 
@@ -150,23 +146,23 @@ def valid_epoch(
 
     with torch.no_grad():
         progress = tqdm(
-        loader, 
-        desc=desc, 
-        leave=False, 
-        bar_format='{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
-    )
+            loader, 
+            desc=desc, 
+            leave=False, 
+            bar_format='{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+        )
         for images, masks in progress:
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
 
             outputs = model(images)
-            loss_val = model.get_loss(outputs, masks)
+            loss_val = criterion(outputs, masks)
 
             batch_loss = float(loss_val.item())
             total_loss += batch_loss
             
             current_metrics = {"loss": batch_loss}
-            for name, fn in METRICS_TO_COMPUTE.items():
+            for name, fn in metrics.items():
                 try:
                     v = fn(outputs, masks)
                     val = float(v.item()) if isinstance(v, torch.Tensor) else float(v)
@@ -194,7 +190,7 @@ def valid_epoch(
         )
 
     results = {"loss": total_loss / n_batches}
-    for m in METRICS_TO_COMPUTE.keys():
+    for m in metrics.keys():
         results[m] = metric_sums[m] / n_batches
     return results
 
@@ -250,7 +246,7 @@ def main():
             shutil.copy2(model_src, os.path.join(artifact_path, model_source_map[model_type]))
 
     # Dataset & Dataloaders
-    train_ds, val_ds = load_train_dataset_from_config(full_config, train_transform, val_transform)
+    train_ds, val_ds = build_train_dataset_from_config(full_config, train_transform, val_transform)
     
     if config.get("visualize_preview", False):
         visualize_dataset(train_ds, title="train_samples_preview", save_path=viz_path)
@@ -281,6 +277,9 @@ def main():
         full_config["model"][model_type]["spatial_dims"] = spatial_dims
         
     model = build_model_from_config(full_config)
+    criterion = build_loss_from_config(full_config)
+    metrics = build_metrics_from_config(full_config)
+    
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device)
 
@@ -289,29 +288,41 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=config.get("learning_rate", 1e-4), weight_decay=config.get("weight_decay", 1e-5))
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
-    history: Dict[str, Dict[str, List[float]]] = {n: {"train": [], "val": []} for n in list(METRICS_TO_COMPUTE.keys()) + ["loss"]}
+    history: Dict[str, Dict[str, List[float]]] = {n: {"train": [], "val": []} for n in list(metrics.keys()) + ["loss"]}
     best_val_loss = float("inf")
 
     # Training Loop
     logging.info("Starting training...")
     max_grad_norm = config.get("max_grad_norm")
     
+    # Separate metrics: only use torch-based nn.Module metrics for training if any, 
+    # but based on user request, let's just use loss for training to be fastest.
+    # We will compute all metrics only during validation.
+    
     for epoch in range(config.get("training_epochs", 30)):
         print("\n"); logger.info(f"Epoch {epoch + 1}")
         
-        train_res = train_epoch(model, train_loader, optimizer, device, epoch, max_grad_norm=max_grad_norm)
-        val_res = valid_epoch(model, val_loader, device, epoch, viz_path=viz_path)
+        # Training (Passing empty dict for metrics to only compute loss)
+        train_results = train_epoch(model, train_loader, optimizer, criterion, {}, device, epoch, max_grad_norm)
         
-        for m in history.keys():
-            history[m]["train"].append(train_res[m]); history[m]["val"].append(val_res[m])
+        # Validation (Passing all metrics)
+        val_results = valid_epoch(model, val_loader, criterion, metrics, device, epoch, viz_path=viz_path)
+        
+        for k in history.keys():
+            train_val = train_results.get(k, 0.0)
+            val_val = val_results.get(k, 0.0)
+            history[k]["train"].append(train_val)
+            history[k]["val"].append(val_val)
             
-        logger.info(f"Loss -> Train: {train_res['loss']:.4f} | Val: {val_res['loss']:.4f}")
-        for m in METRICS_TO_COMPUTE.keys():
-            logger.info(f"{m.capitalize()} -> Train: {train_res[m]:.4f} | Val: {val_res[m]:.4f}")
+        logger.info(f"Loss -> Train: {train_results['loss']:.4f} | Val: {val_results['loss']:.4f}")
+        for m in metrics.keys():
+            logger.info(f"{m.capitalize()} -> Val: {val_results[m]:.4f}")
 
-        scheduler.step(val_res['loss'])
-        if val_res['loss'] < best_val_loss:
-            best_val_loss = val_res['loss']; save_checkpoint(model, weight_path, model_name)
+        val_avg_loss = val_results["loss"]
+
+        scheduler.step(val_avg_loss)
+        if val_avg_loss < best_val_loss:
+            best_val_loss = val_avg_loss; save_checkpoint(model, weight_path, model_name)
         
         if (epoch + 1) % 25 == 0:
             save_checkpoint(model, weight_path, f"{model_name}_epoch_{epoch+1}")

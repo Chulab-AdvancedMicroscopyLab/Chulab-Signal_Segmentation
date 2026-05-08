@@ -1,7 +1,6 @@
 from monai.networks.nets import VNet as MonaiVNet
 import torch.nn as nn
 import torch
-from utils.metrics import hybrid_focal_tversky_loss
 
 class VNet(nn.Module):
     """
@@ -27,6 +26,3 @@ class VNet(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-
-    def get_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return hybrid_focal_tversky_loss(pred, target)

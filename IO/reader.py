@@ -98,12 +98,16 @@ class FileReader:
         volume_cumulative_z (list[int]): Cumulative Z extents for each file.
     """
 
-    def __init__(self, input_path, memory_limit_gb=32, io_workers=4, compute_stats=False, stats_sample_rate=1.0):
+    def __init__(self, input_path, memory_limit_gb=32, io_workers=4, compute_stats=False, stats_sample_rate=1.0, low_cut=None, high_cut=None, compute_histogram=False, hist_bins=256):
         self.input_path = Path(input_path)
         self.memory_limit_bytes = memory_limit_gb * 1024 ** 3
         self.io_workers = io_workers
         self.compute_stats = compute_stats
         self.stats_sample_rate = float(stats_sample_rate)
+        self.low_cut = low_cut
+        self.high_cut = high_cut
+        self.compute_histogram = compute_histogram
+        self.hist_bins = hist_bins
 
         logger.info(f"Initializing FileReader with path: {self.input_path}")
 
@@ -119,6 +123,9 @@ class FileReader:
         self.volume_cumulative_z: list[int] = []
         self.volume_mean: float = 0.0
         self.volume_std: float = 0.0
+        self.volume_min: float = 0.0
+        self.volume_max: float = 0.0
+        self.volume_histogram: np.ndarray | None = None
 
         self._get_volume_info()
 
@@ -127,22 +134,13 @@ class FileReader:
         logger.info(f"Volume dtype: {self.volume_dtype}")
         logger.info(f"Volume mean: {self.volume_mean}")
         logger.info(f"Volume std: {self.volume_std}")
+        logger.info(f"Volume min: {self.volume_min}")
+        logger.info(f"Volume max: {self.volume_max}")
+        if self.volume_histogram is not None:
+            logger.info(f"Volume histogram computed with {self.hist_bins} bins")
         
-    def read(self, z_start=0, z_end=None, y_start=0, y_end=None, x_start=0, x_end=None):
-        """Load a sub-volume defined by Z/Y/X bounds into memory.
-
-        Args:
-            z_start (int): Inclusive starting Z index.
-            z_end (int | None): Exclusive ending Z index; defaults to Z size.
-            y_start (int): Inclusive starting Y index.
-            y_end (int | None): Exclusive ending Y index; defaults to Y size.
-            x_start (int): Inclusive starting X index.
-            x_end (int | None): Exclusive ending X index; defaults to X size.
-
-        Returns:
-            np.ndarray: Array of shape ``(z_end-z_start, y_end-y_start, x_end-x_start)``
-            with ``self.volume_dtype``.
-        """
+    def read(self, z_start=0, z_end=None, y_start=0, y_end=None, x_start=0, x_end=None, out_dtype=None):
+        """Load a sub-volume defined by Z/Y/X bounds into memory."""
         # 1) defaults and clamping
         z0 = max(0, z_start)
         z1 = min(self.volume_shape[0], self.volume_shape[0] if z_end is None else z_end)
@@ -156,8 +154,11 @@ class FileReader:
         dy = y1 - y0
         dx = x1 - x0
 
+        # Determine target dtype
+        target_dtype = np.dtype(out_dtype) if out_dtype is not None else self.volume_dtype
+
         if dz <= 0 or dy <= 0 or dx <= 0:
-            return np.empty((max(0, dz), max(0, dy), max(0, dx)), dtype=self.volume_dtype)
+            return np.empty((max(0, dz), max(0, dy), max(0, dx)), dtype=target_dtype)
 
         # 2) find which files overlap this Z-range
         needed = list(self._iter_needed_files(z0, z1))
@@ -171,8 +172,8 @@ class FileReader:
         if (total_to_load * 2 > mem_limit) and not is_zarr:
             raise MemoryError(f"Need {total_to_load*2:.2f}GiB but limit is {mem_limit:.2f}GiB")
 
-        # 4) pre-allocate output
-        out = np.empty((dz, dy, dx), dtype=self.volume_dtype)
+        # 4) pre-allocate output with final target dtype
+        out = np.empty((dz, dy, dx), dtype=target_dtype)
 
         # 5) stream files (Sequential for Zarr, Multithreaded for others)
         if is_zarr:
@@ -184,9 +185,12 @@ class FileReader:
                     self.volume_files[idx],
                     self.volume_types[idx],
                     read_to_array=True,
-                    max_workers=self.io_workers
+                    max_workers=self.io_workers,
+                    low_cut=self.low_cut,
+                    high_cut=self.high_cut
                 )
                 slab = arr[file_z0:file_z1, y0:y1, x0:x1]
+                # In-place copy handles conversion if dtypes differ
                 out[offset:offset+length, :, :] = slab
                 del arr, slab
                 offset += length
@@ -195,18 +199,17 @@ class FileReader:
             num_needed = len(needed)
             def _load_task(task):
                 idx, f_z0, f_z1, out_offset, length = task
-                # If we are reading multiple files in parallel, we limit each file's 
-                # internal decompression to 1 worker to avoid over-subscribing CPU.
-                # If only one file is needed, we let it use all io_workers.
                 dec_workers = 1 if num_needed > 1 else self.io_workers
                 
                 arr = read_image(
                     self.volume_files[idx],
                     self.volume_types[idx],
                     read_to_array=True,
-                    max_workers=dec_workers
+                    max_workers=dec_workers,
+                    low_cut=self.low_cut,
+                    high_cut=self.high_cut
                 )
-                # Ensure we are only grabbing the requested sub-crop in Y and X as well
+                # In-place copy handles conversion if dtypes differ
                 out[out_offset:out_offset+length, :, :] = arr[f_z0:f_z1, y0:y1, x0:x1]
 
             task_list = []
@@ -217,8 +220,6 @@ class FileReader:
                 current_offset += length
 
             with ThreadPoolExecutor(max_workers=self.io_workers) as executor:
-                # Using map or submit here is cleaner than manual grouping 
-                # unless you have thousands of tiny files.
                 list(executor.map(_load_task, task_list))
 
         return out
@@ -258,13 +259,13 @@ class FileReader:
         return files, types, volume_name
     
     def _get_volume_info(self):
-        """Populate aggregate metadata (shape, dtype, sizes) for the volume.
+        """Populate aggregate metadata for the volume.
 
         Raises:
             RuntimeError: If metadata collection fails for any source file.
             ValueError: If XY shapes or dtypes are inconsistent.
         """
-        # Pass 1: Basic Metadata (+ Optional Stats if files are read anyway)
+        # Pass 1: Basic Metadata (Shape and Dtype only)
         entries = self._collect_volume_metadata()
         if not entries:
             raise RuntimeError("Failed to collect volume info for all input files")
@@ -280,136 +281,97 @@ class FileReader:
         self.volume_dtype = entries[0].dtype
         self.volume_sizes = [entry.size_gb for entry in entries]
 
-        # Pass 2: Global Stats
-        if not self.compute_stats:
-            self.volume_mean, self.volume_std = 0.0, 0.0
-            return
-
-        # Check if we already have stats for ALL files from the metadata pass
-        if all(e.mean != 0.0 or e.std != 0.0 for e in entries):
-            logger.info("Aggregating global statistics from metadata pass...")
-            self.volume_mean, self.volume_std = self._calculate_aggregate_stats(entries)
+        # Pass 2: Unified Global Data Pass
+        # We always do a fresh read pass if stats are requested to ensure 
+        # perfect uniformity in sampling, clipping, and calculation.
+        if self.compute_stats:
+            self._compute_global_data()
         else:
-            # We are missing stats for some files (likely large containers that used lightweight metadata)
-            # Run the efficient double-buffered chunked pass
-            self.volume_mean, self.volume_std = self._compute_global_stats()
+            self.volume_mean, self.volume_std = 0.0, 0.0
+            self.volume_min, self.volume_max = 0.0, 0.0
 
-    @staticmethod
-    def _calculate_aggregate_stats(entries: list[VolumeMetadata]) -> tuple[float, float]:
-        """Calculate weighted mean and pooled standard deviation across all volume entries.
-
-        Args:
-            entries: List of metadata objects containing per-file stats.
-
-        Returns:
-            tuple[float, float]: The (mean, std) for the combined volume.
-        """
-        total_pixels = 0
-        sum_val = 0.0
-        for entry in entries:
-            n = np.prod(entry.shape)
-            total_pixels += n
-            sum_val += entry.mean * n
-
-        if total_pixels == 0:
-            return 0.0, 0.0
-
-        mean = sum_val / total_pixels
-
-        # Aggregate variance using the law of total variance:
-        # E[X^2] = Var(X) + (E[X])^2
-        sum_sq_val = 0.0
-        for entry in entries:
-            n = np.prod(entry.shape)
-            sum_sq_val += (entry.std**2 + entry.mean**2) * n
-
-        mean_sq = sum_sq_val / total_pixels
-        std = float(np.sqrt(max(0, mean_sq - mean**2)))
-
-        return float(mean), float(std)
-
-    def _compute_global_stats(self) -> tuple[float, float]:
-        """Calculate weighted mean and pooled standard deviation across the full volume.
-        
-        Uses a double-buffering approach: one background thread handles sequential IO 
-        while the main thread performs calculations. This avoids IO competition.
-        """
+    def _compute_global_data(self):
+        """Unified pass to calculate mean, std, min, max and optionally histogram."""
         slice_size_bytes = self.volume_shape[1] * self.volume_shape[2] * self.volume_dtype.itemsize
         target_chunk_bytes = self.memory_limit_bytes * 0.1
         chunk_size = max(1, int(target_chunk_bytes / slice_size_bytes))
         chunk_size = min(chunk_size, 128)
         
-        # Calculate sampling step (e.g. 0.5 sample rate -> step of 2 chunks)
         step = max(1, int(1.0 / self.stats_sample_rate)) if self.stats_sample_rate < 1.0 else 1
         
-        if step > 1:
-            logger.info(f"Computing global volume statistics in chunks of {chunk_size} Z-slices (Sampling 1/{step} chunks)...")
+        if self.compute_histogram:
+            logger.info(f"Computing global volume stats and histogram ({self.hist_bins} bins) in chunks of {chunk_size} Z-slices...")
         else:
-            logger.info(f"Computing global volume statistics in chunks of {chunk_size} Z-slices...")
+            logger.info(f"Computing global volume stats in chunks of {chunk_size} Z-slices...")
 
         all_z_ranges = []
         for z0 in range(0, self.volume_shape[0], chunk_size):
             z1 = min(z0 + chunk_size, self.volume_shape[0])
             all_z_ranges.append((z0, z1))
         
-        # Apply chunk-wise sampling
         z_ranges = all_z_ranges[::step]
 
+        from .reader_tools import _compute_accumulators_numba, _compute_all_stats_serial
+
+        # If we need a histogram, we need a preliminary range for the bins
+        # We'll use the low_cut/high_cut if provided, otherwise assume data type limits
+        r_min = self.low_cut if self.low_cut is not None else 0.0
+        r_max = self.high_cut if self.high_cut is not None else (65535.0 if self.volume_dtype == np.uint16 else 255.0)
+
         def _process_chunk(z_range):
-            """Load data and compute local sum/sum_sq in one pass to avoid returning large arrays."""
             data = self.read(z_start=z_range[0], z_end=z_range[1])
             if data.size == 0:
-                return 0, 0.0, 0.0
+                return 0, 0.0, 0.0, 0.0, 0.0, np.zeros(self.hist_bins, dtype=np.int64)
             
-            # Use parallel numba for fast single-pass stats
-            res = _compute_accumulators_numba(data)
+            if self.compute_histogram:
+                res = _compute_all_stats_serial(data, self.hist_bins, r_min, r_max)
+            else:
+                n, sx, sx2, v_min, v_max = _compute_accumulators_numba(data)
+                res = (n, sx, sx2, v_min, v_max, None)
             
-            del data # Explicitly free
+            del data
             return res
 
         total_n = 0
         total_sum_x = 0.0
         total_sum_x2 = 0.0
+        global_min = float('inf')
+        global_max = float('-inf')
+        global_hist = np.zeros(self.hist_bins, dtype=np.int64) if self.compute_histogram else None
 
-        # Use 2 workers to allow one chunk to be processed (calc) while the next is being loaded.
-        # This effectively overlaps the CPU-bound calc with the IO-bound read.
         with ThreadPoolExecutor(max_workers=2) as executor:
-            # Pre-submit the first chunk
             curr_future = executor.submit(_process_chunk, z_ranges[0])
-            
             for i in range(len(z_ranges)):
-                # 1. Pre-submit the NEXT chunk to the other worker immediately
                 if i + 1 < len(z_ranges):
                     next_future = executor.submit(_process_chunk, z_ranges[i+1])
                 else:
                     next_future = None
                 
-                # 2. Wait for the CURRENT chunk results (n, sum_x, sum_x2)
-                n, sx, sx2 = curr_future.result()
+                n, sx, sx2, v_min, v_max, h = curr_future.result()
                 
-                # 3. Accumulate stats for the current chunk
                 total_n += n
                 total_sum_x += sx
                 total_sum_x2 += sx2
+                if v_min < global_min: global_min = v_min
+                if v_max > global_max: global_max = v_max
+                if h is not None: global_hist += h
                 
-                # 4. Advance the future pointer for the next iteration
                 curr_future = next_future
 
-        if total_n == 0:
-            return 0.0, 0.0
-
-        mean = total_sum_x / total_n
-        var = (total_sum_x2 / total_n) - (mean**2)
-        std = float(np.sqrt(max(0, var)))
-        
-        return float(mean), std
+        if total_n > 0:
+            self.volume_mean = total_sum_x / total_n
+            var = (total_sum_x2 / total_n) - (self.volume_mean**2)
+            self.volume_std = float(np.sqrt(max(0, var)))
+            self.volume_min = float(global_min)
+            self.volume_max = float(global_max)
+            self.volume_histogram = global_hist
 
     def _collect_volume_metadata(self) -> list[VolumeMetadata]:
         """Gather per-file metadata concurrently for the assembled volume.
 
         Returns:
             list[VolumeMetadata]: Per-file metadata entries including shape,
-            dtype, estimated size in GiB, mean, and std.
+            dtype, estimated size in GiB, mean, std, min, and max.
         """
         metadata: list[VolumeMetadata | None] = [None] * len(self.volume_files)
 
@@ -418,17 +380,21 @@ class FileReader:
                 file,
                 suffix,
                 read_to_array=False,
+                low_cut=self.low_cut,
+                high_cut=self.high_cut,
                 compute_stats=self.compute_stats
             )
-            # read_image(..., read_to_array=False) returns (shape, dtype, size, mean, std)
-            shape, dtype, size, mean, std = res
+            # read_image(..., read_to_array=False) returns (shape, dtype, size, mean, std, min, max)
+            shape, dtype, size, mean, std, min_v, max_v = res
             shape_zyx = tuple(int(dim) for dim in shape)  # normalize to ints
             return VolumeMetadata(
                 shape=shape_zyx, 
                 dtype=dtype, 
                 size_gb=float(size),
                 mean=float(mean),
-                std=float(std)
+                std=float(std),
+                min=float(min_v),
+                max=float(max_v)
             )
 
         with ThreadPoolExecutor(max_workers=self.io_workers) as executor:

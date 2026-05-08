@@ -1,12 +1,10 @@
 from monai.networks.nets import UNet as MonaiUNet
 import torch.nn as nn
 import torch
-from utils.metrics import hybrid_focal_tversky_loss
 
 class UNet(nn.Module):
     """
     A wrapper for MONAI's UNet.
-    Training loss (Soft Dice + BCE) is encapsulated within the model.
     """
     def __init__(
         self, 
@@ -31,6 +29,3 @@ class UNet(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-
-    def get_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return hybrid_focal_tversky_loss(pred, target)
