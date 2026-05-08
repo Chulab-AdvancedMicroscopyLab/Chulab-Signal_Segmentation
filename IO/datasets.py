@@ -70,6 +70,12 @@ class BaseMicroscopyDataset(Dataset):
                 mask_vol = self.mask_tensors[meta.volume_idx]
                 sample["mask"] = mask_vol[:, slices.z_slice, slices.y_slice, slices.x_slice]
 
+        # Handle 2D cases: if depth is 1, squeeze it to (C, H, W) for 2D model compatibility
+        if sample["image"].shape[1] == 1:
+            sample["image"] = sample["image"].squeeze(1)
+            if self.with_mask:
+                sample["mask"] = sample["mask"].squeeze(1)
+
         if self.transform is not None:
             sample = self.transform(sample)
 
@@ -143,6 +149,10 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             )
             img_data = img_reader.read(out_dtype=np.float32)
             
+            # Read mask data
+            msk_reader = FileReader(msk_path, io_workers=io_workers)
+            msk_data = msk_reader.read(out_dtype=np.float32)
+
             # Check if padding is needed
             current_shape = img_data.shape
             pad_width = []
@@ -154,18 +164,16 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
                 else:
                     pad_width.append((0, 0))
             
-            # Apply Normalization
-            normalizer = build_normalizer_from_config(full_config, img_reader, mode="train")
-            img_data = normalizer(img_data)
-            
-            msk_reader = FileReader(msk_path, io_workers=io_workers)
-            msk_data = msk_reader.read(out_dtype=np.float32)
-            
             if needs_padding:
                 padded_shape = tuple(max(current_shape[i], patch_size[i]) for i in range(3))
                 logger.info(f"Volume {v_display_name}: Padded from {current_shape} to {padded_shape} to fit patch size {patch_size}")
+                # Pad both BEFORE normalization to ensure background consistency
                 img_data = np.pad(img_data, pad_width, mode='constant', constant_values=0)
                 msk_data = np.pad(msk_data, pad_width, mode='constant', constant_values=0)
+
+            # Apply Normalization
+            normalizer = build_normalizer_from_config(full_config, img_reader, mode="train")
+            img_data = normalizer(img_data)
             
             indices = generate_patch_indices(img_data.shape, patch_size, overlap)
             filtered = filter_indices_by_mask(msk_data, indices, neg_keep_ratio)
@@ -175,12 +183,15 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             
             # Ensure patches are divisible by 32 for model compatibility (e.g. SwinUNETR)
             n, d, h, w = img_patches.shape
-            pad_d = (32 - d % 32) % 32
+            # Only pad depth if it's already > 1 (3D mode)
+            pad_d = (32 - d % 32) % 32 if d > 1 else 0
             pad_h = (32 - h % 32) % 32
             pad_w = (32 - w % 32) % 32
+            
             if pad_d > 0 or pad_h > 0 or pad_w > 0:
-                img_patches = np.pad(img_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
-                msk_patches = np.pad(msk_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
+                bg_val = normalizer.get_background_value()
+                img_patches = np.pad(img_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant', constant_values=bg_val)
+                msk_patches = np.pad(msk_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant', constant_values=0)
                 logger.debug(f"Training patches padded to {(d+pad_d, h+pad_h, w+pad_w)} for model compatibility.")
 
             # Convert to torch and add channel dimension: (N, D, H, W) -> (N, 1, D, H, W)
@@ -283,13 +294,15 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         # 5. Final safety padding: Ensure each patch dimension is divisible by 32
         # This handles cases where patch_size itself is not divisible by 32.
         n, d, h, w = img_patches.shape
-        pad_d = (32 - d % 32) % 32
+        # Only pad depth if it's already > 1 (3D mode)
+        pad_d = (32 - d % 32) % 32 if d > 1 else 0
         pad_h = (32 - h % 32) % 32
         pad_w = (32 - w % 32) % 32
         
         if pad_d > 0 or pad_h > 0 or pad_w > 0:
-            img_patches = np.pad(img_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
-            logger.debug(f"Patches padded from {(d, h, w)} to {(d+pad_d, h+pad_h, w+pad_w)} for model compatibility.")
+            bg_val = normalizer.get_background_value()
+            img_patches = np.pad(img_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant', constant_values=bg_val)
+            logger.debug(f"Patches padded from {(d, h, w)} to {(img_patches.shape[1], img_patches.shape[2], img_patches.shape[3])} for model compatibility.")
 
         # 6. Pack into a single contiguous shared tensor
         # Shape: (N_patches, 1, D_padded, H_padded, W_padded)
