@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Robust Analysis: Evaluates predicted masks against Ground Truth.
 Dynamically discovers Image, GT, and Prediction triplets without hardcoded names.

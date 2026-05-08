@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Batch volume inference with a synchronized Disk Manager pipeline.
 

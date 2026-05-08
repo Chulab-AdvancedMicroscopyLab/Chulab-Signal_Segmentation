@@ -8,11 +8,24 @@ def _numba_stitch_loop(reconstruction, weight, patches, positions, pd, ph, pw):
     """
     Highly optimized sequential accumulation loop using Numba.
     Sequential is used to avoid race conditions on overlapping pixels.
+    Handles potential size mismatches between patches and reconstruction.
     """
+    rd, rh, rw = reconstruction.shape
     for i in range(len(patches)):
         z, y, x = positions[i]
-        reconstruction[z:z+pd, y:y+ph, x:x+pw] += patches[i]
-        weight[z:z+pd, y:y+ph, x:x+pw] += 1
+        
+        # Calculate the actual region to fill, cropping both the patch and the target
+        # if they exceed reconstruction boundaries or if the patch is padded.
+        # pd, ph, pw are the nominal patch sizes (from config).
+        # patches[i].shape may be larger due to model-compatibility padding.
+        
+        target_d = min(pd, rd - z)
+        target_h = min(ph, rh - y)
+        target_w = min(pw, rw - x)
+        
+        if target_d > 0 and target_h > 0 and target_w > 0:
+            reconstruction[z:z+target_d, y:y+target_h, x:x+target_w] += patches[i][:target_d, :target_h, :target_w]
+            weight[z:z+target_d, y:y+target_h, x:x+target_w] += 1
 
 @numba.njit(parallel=True, nogil=True)
 def _numba_finalize_reconstruction(reconstruction, weight, prev_z_slices, logit_threshold):

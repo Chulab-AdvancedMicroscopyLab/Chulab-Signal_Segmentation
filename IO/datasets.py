@@ -175,6 +175,16 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             img_patches = extract_data_from_indices(img_data, filtered, as_stack=True)
             msk_patches = extract_data_from_indices(msk_data, filtered, as_stack=True)
             
+            # Ensure patches are divisible by 32 for model compatibility (e.g. SwinUNETR)
+            n, d, h, w = img_patches.shape
+            pad_d = (32 - d % 32) % 32
+            pad_h = (32 - h % 32) % 32
+            pad_w = (32 - w % 32) % 32
+            if pad_d > 0 or pad_h > 0 or pad_w > 0:
+                img_patches = np.pad(img_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
+                msk_patches = np.pad(msk_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
+                logger.debug(f"Training patches padded to {(d+pad_d, h+pad_h, w+pad_w)} for model compatibility.")
+
             # Convert to torch and add channel dimension: (N, D, H, W) -> (N, 1, D, H, W)
             all_image_patches.append(torch.from_numpy(img_patches).unsqueeze(1))
             all_mask_patches.append(torch.from_numpy(msk_patches).unsqueeze(1))
@@ -254,6 +264,14 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         # 1. Read the full window (optimized parallel load + conversion)
         img_data = image_reader.read(z_start=z_start, z_end=z_end, out_dtype=np.float32)
         
+        # --- Padding logic for model compatibility (e.g. SwinUNETR requires divisibility by 32) ---
+        curr_shape = img_data.shape
+        # Ensure volume is at least as large as patch_size
+        pad_v = [max(0, patch_size[i] - curr_shape[i]) for i in range(3)]
+        if any(v > 0 for v in pad_v):
+            img_data = np.pad(img_data, ((0, pad_v[0]), (0, pad_v[1]), (0, pad_v[2])), mode='constant')
+            logger.debug(f"Chunk padded from {curr_shape} to {img_data.shape} to fit patch_size {patch_size}")
+
         # 2. Global normalization
         normalizer = build_normalizer_from_config(full_config, image_reader, mode="inference")
         normalizer(img_data)
@@ -264,11 +282,22 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         # 4. Pre-extract all patches (this ensures workers do zero slicing/computation)
         img_patches = extract_data_from_indices(img_data, raw_indices, as_stack=True)
         
-        # 5. Pack into a single contiguous shared tensor
-        # Shape: (N_patches, 1, D, H, W)
+        # 5. Final safety padding: Ensure each patch dimension is divisible by 32
+        # This handles cases where patch_size itself is not divisible by 32.
+        n, d, h, w = img_patches.shape
+        pad_d = (32 - d % 32) % 32
+        pad_h = (32 - h % 32) % 32
+        pad_w = (32 - w % 32) % 32
+        
+        if pad_d > 0 or pad_h > 0 or pad_w > 0:
+            img_patches = np.pad(img_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
+            logger.debug(f"Patches padded from {(d, h, w)} to {(d+pad_d, h+pad_h, w+pad_w)} for model compatibility.")
+
+        # 6. Pack into a single contiguous shared tensor
+        # Shape: (N_patches, 1, D_padded, H_padded, W_padded)
         image_stack = torch.from_numpy(img_patches).unsqueeze(1).share_memory_()
         
-        # 6. Map indices to the stack while preserving PatchSlice for stitching
+        # 7. Map indices to the stack while preserving PatchSlice for stitching
         patch_indices = [
             PatchMetadata(volume_idx=i, slices=raw_indices[i]) 
             for i in range(len(raw_indices))

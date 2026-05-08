@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Command-line entry point for converting large 3D volumes into various
 output formats (OME-Zarr pyramids, flat Zarr, TIFF/NIfTI volumes, and

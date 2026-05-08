@@ -8,7 +8,7 @@
     "normalization": {
         "description": "Registry of available intensity normalization methods.",
         "z-score": {
-            "std_multiplier": 1.0 
+            "std_multiplier": 1
         },
         "min-max": {},
         "histogram": {
@@ -91,10 +91,10 @@
         "input_name": "images",
         "mask_name": "images_mask",
         "preprocess": { 
-            "method": "histogram", 
+            "method": "z-score",
             "sample_rate": 1.0,
             "low_cut": null,
-            "high_cut": null
+            "high_cut": 300
         },
         "loss": {
             "dice": 0.7, 
@@ -112,14 +112,16 @@
         "visualize_preview": true
     },
     "inference": {
-        "device": "cuda:0",
+        "device": "cuda:1",
         "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Tumor_CD31/testing-data/Tumor_CD31/uncomplete_training_data",
         "input_name": "images",
         "output_name": "images_mask",
+        "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/Swin_UNETR_v2/weights/Swin_UNETR_v2.pth",
         "preprocess": { 
-            "method": "histogram",
+            "method": "z-score",
+            "sample_rate": 1.0,
             "low_cut": null,
-            "high_cut": null
+            "high_cut": 300
         },
         "batch_size": 16,
         "inference_patch_size": [64, 64, 64],

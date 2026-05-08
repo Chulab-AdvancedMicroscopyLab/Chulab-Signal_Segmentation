@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Train a 2D/3D U-Net-style segmentation model on microscopy data using shared memory.
 """
