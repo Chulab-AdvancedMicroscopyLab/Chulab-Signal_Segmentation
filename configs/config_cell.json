@@ -25,7 +25,7 @@
             "resize_factor": 2,
             "chunk_size": [128, 128, 128]
         },
-        "scroll-tif": {
+        "scroll-tiff": {
             "axis": 0
         },
         "single-tiff": {}

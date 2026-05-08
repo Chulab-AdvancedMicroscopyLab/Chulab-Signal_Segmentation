@@ -151,6 +151,7 @@ def disk_manager_worker(
                     z_overlay=res_z_overlay,
                     prev_z_slices=prev_z_slices,
                     resize_factor=resize_factor,
+                    output_dtype=data_writer.output_dtype
                 )
                 data_writer.write(stitched_volume, z_start=res_z_start, z_end=res_z_start+stitched_volume.shape[0])
                 stitch_queue.task_done()
@@ -171,11 +172,11 @@ def disk_manager_worker(
                 z_overlay=0, 
                 prev_z_slices=prev_z_slices,
                 resize_factor=resize_factor,
+                output_dtype=data_writer.output_dtype
             )
             data_writer.write(stitched_volume, z_start=res_z_start, z_end=res_z_start+stitched_volume.shape[0])
             stitch_queue.task_done()
 
-        data_writer.complete_resize()
         if output_type == "ome-zarr":
             data_writer.complete_ome()
 
@@ -208,11 +209,12 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
     )
     
     os.makedirs(output_dir, exist_ok=True)
-    output_type_str = output_config.get("type", "Scroll-Tif")
+    output_type_str = output_config.get("type", "Scroll-Tiff")
     output_type = TYPE_MAP.get(output_type_str, output_type_str)
     
     # Merge parameters: Registry (global defaults) + Local Output Config
-    type_key = output_type_str.lower()
+    # Use the unified internal type for registry lookup
+    type_key = output_type
     type_defaults = registry.get(type_key, {})
     type_overrides = output_config.get(type_key, {})
     

@@ -29,9 +29,9 @@ class VolumeMetadata:
 OUTPUT_CHOICES: tuple[str, ...] = (
     "OME-Zarr",
     "Zarr",
-    "Tif",
+    "Tiff",
     "Nifti",
-    "Scroll-Tif",
+    "Scroll-Tiff",
     "Scroll-Nifti",
 )
 """Human-friendly output selection labels exposed via the CLI."""
@@ -39,8 +39,11 @@ OUTPUT_CHOICES: tuple[str, ...] = (
 TYPE_MAP: dict[str, str] = {
     "OME-Zarr": "ome-zarr",
     "Zarr": "zarr",
+    "Tiff": "single-tiff",
     "Tif": "single-tiff",
+    "Single-Tiff": "single-tiff",
     "Nifti": "single-nii",
+    "Scroll-Tiff": "scroll-tiff",
     "Scroll-Tif": "scroll-tiff",
     "Scroll-Nifti": "scroll-nii",
 }

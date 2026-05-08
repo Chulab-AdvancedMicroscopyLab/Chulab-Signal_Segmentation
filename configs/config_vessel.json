@@ -101,7 +101,7 @@
             "focal": 0.3
         },
         "metrics": ["dice_soft", "dice_hard", "iou", "mcc", "cldice", "pr_auc"],
-        "training_epochs": 100,
+        "training_epochs": 150,
         "training_batch_size": 8,
         "training_num_workers": 8,
         "training_patch_size": [64, 64, 64],
@@ -128,19 +128,19 @@
         "inference_overlay": [16, 16, 16],
         "inference_resize_factor": [1.0, 1.0, 1.0],
         "output": {
-            "type": "Scroll-Tif",
+            "type": "Scroll-Tiff",
             "dtype": "uint16",
             "resize_order": 0
         }
     },
     "converter": [
         {
-            "input_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor/20260310_12_24_43_PC25J0006_ctrl_3_tumor_CD31_640_4x_z2_Destripe_DONE/20260414_Tumor_mask_test_PC25J0006_ctrl_3-1_shrink_anno.tif",
-            "output_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor/20260310_12_24_43_PC25J0006_ctrl_3_tumor_CD31_640_4x_z2_Destripe_DONE",
+            "input_path": "/mnt/DAS100T/Ya-Hui_Lin/BV_normalization/Tumor_mask/PC25J0014_treat_2_tumor_mask",
+            "output_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor/20260310_13_04_13_PC25J0014_treat_2_tumor_CD31_640_4x_z2_Destripe_DONE",
             "output": {
-                "type": "OME-Zarr",
+                "type": "Zarr",
                 "dtype": "uint16",
-                "resize_shape": [3030, 7254, 5564],
+                "resize_shape": [1568, 1468, 1451],
                 "resize_order": 0
             }
         }

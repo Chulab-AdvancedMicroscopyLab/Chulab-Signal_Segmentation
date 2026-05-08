@@ -243,7 +243,8 @@ def run_task(task_config, full_config):
             Path(output_path).mkdir(parents=True, exist_ok=True)
 
             # Merge parameters: Registry (global defaults) + Local Output Config
-            type_key = ot_str.lower()
+            # Use the unified internal type for registry lookup
+            type_key = io_output_type
             type_defaults = registry.get(type_key, {})
             type_overrides = output_config.get(type_key, {})
             final_type_params = {**type_defaults, **type_overrides}

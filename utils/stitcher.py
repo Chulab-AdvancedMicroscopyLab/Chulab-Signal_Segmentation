@@ -61,7 +61,7 @@ def _numba_finalize_reconstruction(reconstruction, weight, prev_z_slices, logit_
                 
     return binary_out
 
-def stitch_image(patches, positions, original_shape, patch_size, resize_factor=(1, 1, 1), prev_z_slices=None, z_overlay=0, threshold=0.5):
+def stitch_image(patches, positions, original_shape, patch_size, resize_factor=(1, 1, 1), prev_z_slices=None, z_overlay=0, threshold=0.5, output_dtype=np.uint8):
     """
     Reconstructs the full 3D volume from patches and blends overlapping Z slices across chunks.
     Uses highly parallel Numba kernels for all major computations.
@@ -93,7 +93,9 @@ def stitch_image(patches, positions, original_shape, patch_size, resize_factor=(
     if threshold == 0.5:
         logit_threshold = 0.0
     else:
-        logit_threshold = -math.log(1.0 / threshold - 1.0)
+        # Avoid log(0)
+        t = max(min(threshold, 0.999), 0.001)
+        logit_threshold = -math.log(1.0 / t - 1.0)
     
     # Numba doesn't like Optional[Array] being None when indexing is involved.
     # We pass a dummy 3D array if prev_z_slices is None.
@@ -102,6 +104,12 @@ def stitch_image(patches, positions, original_shape, patch_size, resize_factor=(
     binary_mask = _numba_finalize_reconstruction(
         reconstruction, weight, safe_prev, logit_threshold
     )
+    
+    # Scale to output_dtype (e.g., 255 for uint8, 65535 for uint16)
+    if np.issubdtype(output_dtype, np.unsignedinteger):
+        max_val = np.iinfo(output_dtype).max
+        if max_val != 255:
+            binary_mask = (binary_mask.astype(np.float32) / 255.0 * max_val).astype(output_dtype)
     
     # 5. Extract logits for NEXT chunk's overlap BEFORE returning
     next_prev_z = None
