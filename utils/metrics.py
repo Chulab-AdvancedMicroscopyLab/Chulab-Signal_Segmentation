@@ -87,20 +87,23 @@ class IoUScore(nn.Module):
         iou = (intersection + self.smooth) / (union - intersection + self.smooth)
         return iou.mean()
 
+from concurrent.futures import ThreadPoolExecutor
+
 class NumpyMetricWrapper:
-    """Wraps a numpy-based metric function to be callable with tensors."""
-    def __init__(self, func: Callable, threshold: Optional[float] = 0.5, needs_sigmoid: bool = True, **kwargs):
+    """Wraps a numpy-based metric function to be callable with tensors, using parallel execution."""
+    def __init__(self, func: Callable, threshold: Optional[float] = 0.5, needs_sigmoid: bool = True, num_workers: int = 8, **kwargs):
         self.func = func
         self.threshold = threshold
         self.needs_sigmoid = needs_sigmoid
+        self.num_workers = num_workers
         self.kwargs = kwargs
+        self._executor = ThreadPoolExecutor(max_workers=num_workers)
 
     def __call__(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if self.needs_sigmoid:
             pred = pred.sigmoid()
         
         # Move to CPU and convert to numpy
-        # If threshold is None, pass raw scores
         if self.threshold is not None:
             p_np = (pred.detach().cpu().numpy() > self.threshold).astype(np.uint8)
         else:
@@ -108,13 +111,18 @@ class NumpyMetricWrapper:
             
         t_np = (target.detach().cpu().numpy() > 0.5).astype(np.uint8)
         
-        # Batch processing
         batch_size = p_np.shape[0]
-        batch_results = []
-        for i in range(batch_size):
-            res = self.func(t_np[i].squeeze(), p_np[i].squeeze(), **self.kwargs)
-            if not np.isnan(res):
-                batch_results.append(res)
+        
+        def _run_single(i):
+            try:
+                res = self.func(t_np[i].squeeze(), p_np[i].squeeze(), **self.kwargs)
+                return res if not np.isnan(res) else None
+            except Exception:
+                return None
+
+        # Execute batch in parallel
+        results = list(self._executor.map(_run_single, range(batch_size)))
+        batch_results = [r for r in results if r is not None]
         
         if not batch_results:
             return torch.tensor(0.0)
@@ -126,6 +134,11 @@ def build_metrics_from_config(full_config: dict) -> Dict[str, Union[nn.Module, N
     """
     metric_params = full_config.get("metrics", {})
     train_config = full_config.get("train", {})
+    resources = full_config.get("resources", {})
+    
+    # Priority: metrics_workers -> io_workers -> default 4
+    metric_workers = resources.get("metrics_workers", resources.get("io_workers", 4))
+
     metrics_to_use = train_config.get("metrics", ["dice_soft", "dice_hard"])
 
     if isinstance(metrics_to_use, str):
@@ -137,10 +150,10 @@ def build_metrics_from_config(full_config: dict) -> Dict[str, Union[nn.Module, N
         "dice_hard": lambda cfg: HardDiceScore(smooth=cfg.get("smooth", 1e-5)),
         "iou": lambda cfg: IoUScore(smooth=cfg.get("smooth", 1e-5)),
         "bce": lambda _: BCEScore(),
-        "mcc": lambda _: NumpyMetricWrapper(compute_mcc),
-        "cldice": lambda _: NumpyMetricWrapper(compute_cldice),
-        "hausdorff": lambda cfg: NumpyMetricWrapper(compute_robust_hausdorff, percentile=cfg.get("hd_percentile", 95.0)),
-        "pr_auc": lambda _: NumpyMetricWrapper(compute_pr_auc, threshold=None)
+        "mcc": lambda _: NumpyMetricWrapper(compute_mcc, num_workers=metric_workers),
+        "cldice": lambda _: NumpyMetricWrapper(compute_cldice, num_workers=metric_workers),
+        "hausdorff": lambda cfg: NumpyMetricWrapper(compute_robust_hausdorff, percentile=cfg.get("hd_percentile", 95.0), num_workers=metric_workers),
+        "pr_auc": lambda _: NumpyMetricWrapper(compute_pr_auc, threshold=None, num_workers=metric_workers)
     }
 
     built_metrics = {}

@@ -294,6 +294,7 @@ def main():
     # Training Loop
     logging.info("Starting training...")
     max_grad_norm = config.get("max_grad_norm")
+    metric_interval = config.get("metric_interval", 1)
     
     # Separate metrics: only use torch-based nn.Module metrics for training if any, 
     # but based on user request, let's just use loss for training to be fastest.
@@ -302,21 +303,47 @@ def main():
     for epoch in range(config.get("training_epochs", 30)):
         print("\n"); logger.info(f"Epoch {epoch + 1}")
         
-        # Training (Passing empty dict for metrics to only compute loss)
-        train_results = train_epoch(model, train_loader, optimizer, criterion, {}, device, epoch, max_grad_norm)
+        # Calculate heavy metrics only on interval epochs
+        is_metric_epoch = (epoch + 1) % metric_interval == 0
+        curr_metrics = metrics if is_metric_epoch else {}
         
-        # Validation (Passing all metrics)
-        val_results = valid_epoch(model, val_loader, criterion, metrics, device, epoch, viz_path=viz_path)
+        # Training
+        train_results = train_epoch(model, train_loader, optimizer, criterion, curr_metrics, device, epoch, max_grad_norm)
+        
+        # Validation
+        val_results = valid_epoch(model, val_loader, criterion, curr_metrics, device, epoch, viz_path=viz_path)
         
         for k in history.keys():
-            train_val = train_results.get(k, 0.0)
-            val_val = val_results.get(k, 0.0)
-            history[k]["train"].append(train_val)
-            history[k]["val"].append(val_val)
+            if k == "loss":
+                history[k]["train"].append(train_results["loss"])
+                history[k]["val"].append(val_results["loss"])
+            else:
+                # For metrics, if not calculated this epoch, carry over the last known value
+                # This keeps the learning curves continuous in plots
+                t_val = train_results.get(k)
+                if t_val is not None:
+                    history[k]["train"].append(t_val)
+                else:
+                    prev = history[k]["train"][-1] if history[k]["train"] else 0.0
+                    history[k]["train"].append(prev)
+                
+                v_val = val_results.get(k)
+                if v_val is not None:
+                    history[k]["val"].append(v_val)
+                else:
+                    prev = history[k]["val"][-1] if history[k]["val"] else 0.0
+                    history[k]["val"].append(prev)
             
         logger.info(f"Loss -> Train: {train_results['loss']:.4f} | Val: {val_results['loss']:.4f}")
         for m in metrics.keys():
-            logger.info(f"{m.capitalize()} -> Val: {val_results[m]:.4f}")
+            log_parts = []
+            if m in train_results:
+                log_parts.append(f"Train: {train_results[m]:.4f}")
+            if m in val_results:
+                log_parts.append(f"Val: {val_results[m]:.4f}")
+            
+            if log_parts:
+                logger.info(f"{m.capitalize()} -> {' | '.join(log_parts)}")
 
         val_avg_loss = val_results["loss"]
 

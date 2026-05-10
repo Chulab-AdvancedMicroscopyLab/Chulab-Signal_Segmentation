@@ -138,9 +138,12 @@ def disk_manager_worker(
                 item = stitch_queue.get()
                 if item is None: break
                 
-                mask_patches, data_position, res_z_start, res_z_end, res_z_overlay = item
+                mask_patches, data_position, res_z_start, res_z_end, res_z_overlay, dataset = item
                 actual_chunk_depth = res_z_end - res_z_start
-                local_positions = [(pos[0] - res_z_start, pos[1], pos[2]) for pos in data_position]
+                pad_z_before = getattr(dataset, "pad_z_before", 0)
+                
+                # Adjust positions to account for symmetric Z-padding
+                local_positions = [(pos[0] - res_z_start - pad_z_before, pos[1], pos[2]) for pos in data_position]
                 
                 logging.info(f"  Stitching Z: {res_z_start}-{res_z_end}...")
                 stitched_volume, prev_z_slices = stitch_image(
@@ -153,15 +156,19 @@ def disk_manager_worker(
                     resize_factor=resize_factor,
                     output_dtype=data_writer.output_dtype
                 )
+
                 data_writer.write(stitched_volume, z_start=res_z_start, z_end=res_z_start+stitched_volume.shape[0])
                 stitch_queue.task_done()
 
         # 3. FINAL CLEANUP: Write the very last chunk results
         item = stitch_queue.get()
         if item is not None:
-            mask_patches, data_position, res_z_start, res_z_end, res_z_overlay = item
+            mask_patches, data_position, res_z_start, res_z_end, res_z_overlay, dataset = item
             actual_chunk_depth = res_z_end - res_z_start
-            local_positions = [(pos[0] - res_z_start, pos[1], pos[2]) for pos in data_position]
+            pad_z_before = getattr(dataset, "pad_z_before", 0)
+            
+            # Adjust positions to account for symmetric Z-padding
+            local_positions = [(pos[0] - res_z_start - pad_z_before, pos[1], pos[2]) for pos in data_position]
             
             logging.info(f"  Stitching Z: {res_z_start}-{res_z_end}...")
             stitched_volume, _ = stitch_image(
@@ -174,6 +181,7 @@ def disk_manager_worker(
                 resize_factor=resize_factor,
                 output_dtype=data_writer.output_dtype
             )
+
             data_writer.write(stitched_volume, z_start=res_z_start, z_end=res_z_start+stitched_volume.shape[0])
             stitch_queue.task_done()
 
@@ -273,7 +281,7 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
         mask_patches = run_inference(model, loader, device)
         
         data_position = [meta.slices.global_coords for meta in dataset.patch_indices]
-        stitch_queue.put((mask_patches, data_position, z_start, z_end, z_overlay_actual))
+        stitch_queue.put((mask_patches, data_position, z_start, z_end, z_overlay_actual, dataset))
         
     disk_thread.join()
 

@@ -159,17 +159,24 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             needs_padding = False
             for i in range(3):
                 if current_shape[i] < patch_size[i]:
-                    pad_width.append((0, patch_size[i] - current_shape[i]))
+                    total_pad = patch_size[i] - current_shape[i]
+                    if i == 0: # Z-axis: symmetric padding
+                        pad_before = total_pad // 2
+                        pad_after = total_pad - pad_before
+                        pad_width.append((pad_before, pad_after))
+                    else: # Y, X axes: end padding
+                        pad_width.append((0, total_pad))
                     needs_padding = True
                 else:
                     pad_width.append((0, 0))
-            
+
             if needs_padding:
                 padded_shape = tuple(max(current_shape[i], patch_size[i]) for i in range(3))
-                logger.info(f"Volume {v_display_name}: Padded from {current_shape} to {padded_shape} to fit patch size {patch_size}")
+                logger.info(f"Volume {img_path.parent.name}: Padded from {current_shape} to {padded_shape} to fit patch size {patch_size} (Z-symmetric)")
                 # Pad both BEFORE normalization to ensure background consistency
                 img_data = np.pad(img_data, pad_width, mode='constant', constant_values=0)
                 msk_data = np.pad(msk_data, pad_width, mode='constant', constant_values=0)
+
 
             # Apply Normalization
             normalizer = build_normalizer_from_config(full_config, img_reader, mode="train")
@@ -276,10 +283,20 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         # --- Padding logic for model compatibility (e.g. SwinUNETR requires divisibility by 32) ---
         curr_shape = img_data.shape
         # Ensure volume is at least as large as patch_size
-        pad_v = [max(0, patch_size[i] - curr_shape[i]) for i in range(3)]
-        if any(v > 0 for v in pad_v):
-            img_data = np.pad(img_data, ((0, pad_v[0]), (0, pad_v[1]), (0, pad_v[2])), mode='constant')
-            logger.debug(f"Chunk padded from {curr_shape} to {img_data.shape} to fit patch_size {patch_size}")
+        pad_v = []
+        self.pad_z_before = 0
+        for i in range(3):
+            total_pad = max(0, patch_size[i] - curr_shape[i])
+            if i == 0: # Z-axis: symmetric padding
+                self.pad_z_before = total_pad // 2
+                pad_after = total_pad - self.pad_z_before
+                pad_v.append((self.pad_z_before, pad_after))
+            else: # Y, X axes: end padding
+                pad_v.append((0, total_pad))
+        
+        if any(sum(p) > 0 for p in pad_v):
+            img_data = np.pad(img_data, pad_v, mode='constant', constant_values=0)
+            logger.debug(f"Chunk padded from {curr_shape} to {img_data.shape} to fit patch_size {patch_size} (Z-symmetric)")
 
         # 2. Global normalization
         normalizer = build_normalizer_from_config(full_config, image_reader, mode="inference")

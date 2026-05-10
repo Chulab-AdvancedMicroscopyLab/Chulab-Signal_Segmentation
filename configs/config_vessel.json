@@ -3,6 +3,7 @@
         "numba_threads": 16,
         "dask_threads": 16,
         "io_workers": 8,
+        "metrics_workers": 16,
         "memory_limit": 64
     },
     "normalization": {
@@ -67,7 +68,7 @@
         "description": "Registry of available loss functions and their default parameters.",
         "dice": { "smooth": 1e-6 },
         "focal": { "alpha": 0.8, "gamma": 2.0 },
-        "tversky": { "alpha": 0.5, "beta": 0.5, "smooth": 1e-6 },
+        "tversky": { "alpha": 0.3, "beta": 0.7, "smooth": 1e-6 },
         "log_cosh_dice": { "smooth": 1e-6 },
         "bce": {}
     },
@@ -83,10 +84,12 @@
         "pr_auc": {}
     },
     "train": {
-        "device": "cuda:0",
-        "data_path": ["/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Tumor_CD31/training-data/I-AN-3D"],
+        "device": "cuda:1",
+        "data_path": [
+            "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Tumor_CD31/training-data/I-AN-3D"
+        ],
         "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin",
-        "model_name": "Swin_UNETR_v3",
+        "model_name": "Swin_UNETR_v3-2",
         "model_type": "swin_unetr",
         "input_name": "images",
         "mask_name": "images_mask",
@@ -97,10 +100,13 @@
             "high_cut": 300
         },
         "loss": {
-            "dice": 0.7, 
-            "focal": 0.3
+            "log_cosh_dice": 1, 
+            "bce": 0.5
         },
-        "metrics": ["dice_soft", "dice_hard", "iou", "mcc", "cldice", "pr_auc"],
+        "metrics": ["dice_soft", "dice_hard", "bce"],
+        "metric_interval": 5,
+        "val_ratio": 0.1,
+        "seed": 42,
         "training_epochs": 150,
         "training_batch_size": 8,
         "training_num_workers": 8,
@@ -113,10 +119,10 @@
     },
     "inference": {
         "device": "cuda:1",
-        "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Tumor_CD31/testing-data/Tumor_CD31/uncomplete_training_data",
-        "input_name": "images",
-        "output_name": "images_mask",
-        "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/Swin_UNETR_v2/weights/Swin_UNETR_v2.pth",
+        "input_path": "/mnt/DAS218T/Ian_Huang/project_20260310_tumor/20260310_13_04_13_PC25J0014_treat_2_tumor_CD31_640_4x_z2_Destripe_DONE",
+        "input_name": "All_Channels_test",
+        "output_name": "All_Channels_test_mask_0",
+        "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/Swin_UNETR_v3-0/weights/Swin_UNETR_v3-0.pth",
         "preprocess": { 
             "method": "z-score",
             "sample_rate": 1.0,

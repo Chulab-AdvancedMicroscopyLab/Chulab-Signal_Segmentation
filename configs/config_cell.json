@@ -3,6 +3,7 @@
         "numba_threads": 16,
         "dask_threads": 16,
         "io_workers": 8,
+        "metrics_workers": 16,
         "memory_limit": 64
     },
     "normalization": {
@@ -101,6 +102,9 @@
             "focal": 1.0
         },
         "metrics": ["dice_soft", "dice_hard", "iou"],
+        "metric_interval": 5,
+        "val_ratio": 0.2,
+        "seed": 42,
         "training_epochs": 150,
         "training_batch_size": 8,
         "training_num_workers": 8,
@@ -135,56 +139,6 @@
         }
     },
     "converter": [
-        {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_51/Ex_561_Em_600_stitched.zarr",
-            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_51",
-            "output": {
-                "type": "Scroll-Tiff",
-                "dtype": "uint16",
-                "resize_shape": null,
-                "resize_order": 0
-            }
-        },
-        {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_51/Ex_647_Em_690_stitched.zarr",
-            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_51",
-            "output": {
-                "type": "Scroll-Tiff",
-                "dtype": "uint16",
-                "resize_shape": null,
-                "resize_order": 0
-            }
-        },
-        {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_54/Ex_561_Em_600_stitched.zarr",
-            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_54",
-            "output": {
-                "type": "Scroll-Tiff",
-                "dtype": "uint16",
-                "resize_shape": null,
-                "resize_order": 0
-            }
-        },
-        {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_54/Ex_647_Em_690_stitched.zarr",
-            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_54",
-            "output": {
-                "type": "Scroll-Tiff",
-                "dtype": "uint16",
-                "resize_shape": null,
-                "resize_order": 0
-            }
-        },
-        {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_55/Ex_561_Em_600_stitched.zarr",
-            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_55",
-            "output": {
-                "type": "Scroll-Tiff",
-                "dtype": "uint16",
-                "resize_shape": null,
-                "resize_order": 0
-            }
-        },
         {
             "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_55/Ex_647_Em_690_stitched.zarr",
             "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_55",
