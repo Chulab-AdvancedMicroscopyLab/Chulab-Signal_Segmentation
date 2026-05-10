@@ -8,24 +8,34 @@ def _numba_stitch_loop(reconstruction, weight, patches, positions, pd, ph, pw):
     """
     Highly optimized sequential accumulation loop using Numba.
     Sequential is used to avoid race conditions on overlapping pixels.
-    Handles potential size mismatches between patches and reconstruction.
+    Handles potential size mismatches and negative offsets due to padding.
     """
     rd, rh, rw = reconstruction.shape
     for i in range(len(patches)):
         z, y, x = positions[i]
         
-        # Calculate the actual region to fill, cropping both the patch and the target
-        # if they exceed reconstruction boundaries or if the patch is padded.
-        # pd, ph, pw are the nominal patch sizes (from config).
-        # patches[i].shape may be larger due to model-compatibility padding.
+        # Calculate bounds in reconstruction space
+        start_z = max(0, z)
+        start_y = max(0, y)
+        start_x = max(0, x)
         
-        target_d = min(pd, rd - z)
-        target_h = min(ph, rh - y)
-        target_w = min(pw, rw - x)
+        end_z = min(rd, z + pd)
+        end_y = min(rh, y + ph)
+        end_x = min(rw, x + pw)
+        
+        # Calculate bounds in patch space (compensating for negative offsets)
+        p_start_z = max(0, -z)
+        p_start_y = max(0, -y)
+        p_start_x = max(0, -x)
+        
+        target_d = end_z - start_z
+        target_h = end_y - start_y
+        target_w = end_x - start_x
         
         if target_d > 0 and target_h > 0 and target_w > 0:
-            reconstruction[z:z+target_d, y:y+target_h, x:x+target_w] += patches[i][:target_d, :target_h, :target_w]
-            weight[z:z+target_d, y:y+target_h, x:x+target_w] += 1
+            reconstruction[start_z:end_z, start_y:end_y, start_x:end_x] += \
+                patches[i][p_start_z:p_start_z+target_d, p_start_y:p_start_y+target_h, p_start_x:p_start_x+target_w]
+            weight[start_z:end_z, start_y:end_y, start_x:end_x] += 1
 
 @numba.njit(parallel=True, nogil=True)
 def _numba_finalize_reconstruction(reconstruction, weight, prev_z_slices, logit_threshold):

@@ -117,6 +117,19 @@ class Normalizer:
         
         return data
 
+    def get_background_value(self) -> float:
+        """Returns the normalized equivalent of raw 0.0 for padding."""
+        if self.method == "z-score":
+            eps = 1e-8
+            return (0.0 - self.mean) / (self.effective_std + eps)
+        elif self.method == "min-max":
+            eps = 1e-8
+            return (0.0 - self.min_v) / (self.max_v - self.min_v + eps)
+        elif self.method == "histogram":
+            if self.cdf is not None:
+                return float(self.cdf[0])
+        return 0.0
+
 def build_normalizer_from_config(full_config: Dict[str, Any], reader: Any, mode: str = "train") -> Normalizer:
     """
     Builds a Normalizer instance by merging registry parameters and local preprocess settings.

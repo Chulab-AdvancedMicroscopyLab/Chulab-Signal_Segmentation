@@ -229,7 +229,7 @@ def run_task(task_config, full_config):
             logging.error(f"Failed to initialize reader for {input_path}: {e}")
             continue
 
-        resize_shape = output_config.get("resize_shape", task_config.get("resize_shape"))
+        resize_shape = task_config.get("resize_shape")
         full_res_shape = tuple(resize_shape) if resize_shape else reader.volume_shape
         output_dtype = output_config.get("dtype")
         
@@ -243,7 +243,6 @@ def run_task(task_config, full_config):
             Path(output_path).mkdir(parents=True, exist_ok=True)
 
             # Merge parameters: Registry (global defaults) + Local Output Config
-            # Use the unified internal type for registry lookup
             type_key = io_output_type
             type_defaults = registry.get(type_key, {})
             type_overrides = output_config.get(type_key, {})
