@@ -87,22 +87,22 @@
         "device": "cuda:0",
         "data_path": ["/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu/training-data/Hung-Yu-3D"],
         "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos",
-        "model_name": "Swin_UNETR_v1",
+        "model_name": "Swin_UNETR_v0-special",
         "model_type": "swin_unetr",
         "input_name": "images",
         "mask_name": "images_mask",
         "preprocess": { 
-            "method": "histogram", 
+            "method": "z-score", 
             "sample_rate": 1.0,
             "low_cut": null,
             "high_cut": null
         },
         "loss": {
-            "tversky": 1.0, 
-            "focal": 1.0
+            "dice": 1, 
+            "focal": 0.2
         },
         "metrics": ["dice_soft", "dice_hard", "iou"],
-        "metric_interval": 5,
+        "metric_interval": 1,
         "val_ratio": 0.2,
         "seed": 42,
         "training_epochs": 150,
@@ -117,23 +117,23 @@
     },
     "inference": {
         "device": "cuda:0",
-        "input_path": "/mnt/DAS218T/Ian_Huang/project_20260224_Shaun_BV/",
-        "output_path": "/mnt/DAS218T/Ian_Huang/project_20260224_Shaun_BV/",
-        "input_name": "Ex_640_Em_690-50_Ch3_stitched_test",
-        "output_name": "Ex_640_Em_690-50_Ch3_stitched_test_mask",
+        "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special",
+        "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special",
+        "input_name": "images",
+        "output_name": "images_mask_v0",
         "preprocess": { 
             "method": "z-score", 
             "sample_rate": 0.1,
             "low_cut": null,
             "high_cut": null
         },
-        "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos/Swin_UNETR_v1/weights/Swin_UNETR_v1.pth",
+        "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos/Swin_UNETR_v0-special/weights/Swin_UNETR_v0-special.pth",
         "batch_size": 16,
         "inference_patch_size": [64, 64, 64],
         "inference_overlay": [16, 16, 16],
         "inference_resize_factor": [1.0, 1.0, 1.0],
         "output": {
-            "type": "Zarr",
+            "type": "Scroll-Tiff",
             "dtype": "uint16",
             "resize_order": 0
         }

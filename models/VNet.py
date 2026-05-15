@@ -8,10 +8,10 @@ class VNet(nn.Module):
     Designed for volumetric medical image segmentation with residual connections.
     """
     def __init__(
-        self, 
-        spatial_dims, 
-        in_channels, 
-        out_channels, 
+        self,
+        spatial_dims,
+        in_channels,
+        out_channels,
         dropout_prob=0.5,
         dropout_dim=3
     ):
@@ -20,8 +20,9 @@ class VNet(nn.Module):
             spatial_dims=spatial_dims,
             in_channels=in_channels,
             out_channels=out_channels,
-            dropout_prob=dropout_prob,
-            dropout_dim=dropout_dim
+            dropout_prob_down=dropout_prob,
+            dropout_prob_up=(dropout_prob, dropout_prob),
+            dropout_dim=dropout_dim,
         )
 
     def forward(self, x):
