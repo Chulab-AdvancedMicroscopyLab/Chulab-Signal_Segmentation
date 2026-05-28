@@ -13,6 +13,28 @@ from IO.reader import FileReader
 from utils.cropper import PatchSlice, generate_patch_indices, filter_indices_by_mask, extract_data_from_indices
 
 logger = logging.getLogger(__name__)
+
+def _volume_pad_widths(shape: Tuple[int, int, int], min_size: Tuple[int, int, int]) -> List[Tuple[int, int]]:
+    """Return np.pad pad_width so each dim >= min_size. Z: symmetric. Y/X: end-only."""
+    z_pad = max(0, min_size[0] - shape[0])
+    return [
+        (z_pad // 2, z_pad - z_pad // 2),   # Z symmetric
+        (0, max(0, min_size[1] - shape[1])), # Y end
+        (0, max(0, min_size[2] - shape[2])), # X end
+    ]
+
+def _div32_pad_widths(d: int, h: int, w: int, is_3d: bool) -> Tuple[int, int, int]:
+    """Return (pad_d, pad_h, pad_w) to make dims divisible by 32."""
+    pad_d = (32 - d % 32) % 32 if is_3d else 0
+    pad_h = (32 - h % 32) % 32
+    pad_w = (32 - w % 32) % 32
+    return pad_d, pad_h, pad_w
+
+def _pad_image(data: np.ndarray, pad_width, mode: str, fill: float = 0.0) -> np.ndarray:
+    """Apply np.pad with correct kwargs for constant vs reflect/symmetric/edge modes."""
+    kw = {"constant_values": fill} if mode == "constant" else {}
+    return np.pad(data, pad_width, mode=mode, **kw)
+
 @dataclass(frozen=True)
 class PatchMetadata:
     """Metadata for a single patch.
@@ -120,7 +142,8 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         low_cut = preprocess_config.get("low_cut")
         high_cut = preprocess_config.get("high_cut")
         sample_rate = preprocess_config.get("sample_rate", 1.0)
-        method = preprocess_config.get("method", "z-score")
+        method = preprocess_config.get("normalize_mode", "z-score")
+        pad_mode = preprocess_config.get("pad_mode", "constant")
 
         volumes_found = []
         for img_root, msk_root in zip(image_roots, mask_roots):
@@ -153,29 +176,13 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             msk_reader = FileReader(msk_path, io_workers=io_workers)
             msk_data = msk_reader.read(out_dtype=np.float32)
 
-            # Check if padding is needed
-            current_shape = img_data.shape
-            pad_width = []
-            needs_padding = False
-            for i in range(3):
-                if current_shape[i] < patch_size[i]:
-                    total_pad = patch_size[i] - current_shape[i]
-                    if i == 0: # Z-axis: symmetric padding
-                        pad_before = total_pad // 2
-                        pad_after = total_pad - pad_before
-                        pad_width.append((pad_before, pad_after))
-                    else: # Y, X axes: end padding
-                        pad_width.append((0, total_pad))
-                    needs_padding = True
-                else:
-                    pad_width.append((0, 0))
-
-            if needs_padding:
-                padded_shape = tuple(max(current_shape[i], patch_size[i]) for i in range(3))
-                logger.info(f"Volume {img_path.parent.name}: Padded from {current_shape} to {padded_shape} to fit patch size {patch_size} (Z-symmetric)")
-                # Pad both BEFORE normalization to ensure background consistency
-                img_data = np.pad(img_data, pad_width, mode='constant', constant_values=0)
-                msk_data = np.pad(msk_data, pad_width, mode='constant', constant_values=0)
+            # Pad volume to ensure it fits at least one patch (Z: symmetric, Y/X: end)
+            vol_pad = _volume_pad_widths(img_data.shape, patch_size)
+            if any(before + after > 0 for before, after in vol_pad):
+                padded_shape = tuple(img_data.shape[i] + vol_pad[i][0] + vol_pad[i][1] for i in range(3))
+                logger.info(f"Volume {img_path.parent.name}: Padded {img_data.shape} -> {padded_shape} (mode={pad_mode})")
+                img_data = _pad_image(img_data, vol_pad, pad_mode, fill=0.0)
+                msk_data = _pad_image(msk_data, vol_pad, pad_mode, fill=0.0)
 
 
             # Apply Normalization
@@ -188,18 +195,14 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             img_patches = extract_data_from_indices(img_data, filtered, as_stack=True)
             msk_patches = extract_data_from_indices(msk_data, filtered, as_stack=True)
             
-            # Ensure patches are divisible by 32 for model compatibility (e.g. SwinUNETR)
+            # Pad patches to divisibility-by-32 required by SwinUNETR (end-only, N dim untouched)
             n, d, h, w = img_patches.shape
-            # Only pad depth if it's already > 1 (3D mode)
-            pad_d = (32 - d % 32) % 32 if d > 1 else 0
-            pad_h = (32 - h % 32) % 32
-            pad_w = (32 - w % 32) % 32
-            
+            pad_d, pad_h, pad_w = _div32_pad_widths(d, h, w, is_3d=(d > 1))
             if pad_d > 0 or pad_h > 0 or pad_w > 0:
-                bg_val = normalizer.get_background_value()
-                img_patches = np.pad(img_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant', constant_values=bg_val)
-                msk_patches = np.pad(msk_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant', constant_values=0)
-                logger.debug(f"Training patches padded to {(d+pad_d, h+pad_h, w+pad_w)} for model compatibility.")
+                patch_pad = ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w))
+                img_patches = _pad_image(img_patches, patch_pad, pad_mode, fill=normalizer.get_background_value())
+                msk_patches = _pad_image(msk_patches, patch_pad, "constant", fill=0.0)
+                logger.debug(f"Patches div-32 padded: ({d},{h},{w}) -> ({d+pad_d},{h+pad_h},{w+pad_w})")
 
             # Convert to torch and add channel dimension: (N, D, H, W) -> (N, 1, D, H, W)
             all_image_patches.append(torch.from_numpy(img_patches).unsqueeze(1))
@@ -277,26 +280,19 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         from utils.normalization import build_normalizer_from_config
 
         z_start, z_end = z_range
+        inf_preprocess = full_config.get("inference", {}).get("preprocess", {})
+        pad_mode = inf_preprocess.get("pad_mode", "constant")
+
         # 1. Read the full window (optimized parallel load + conversion)
         img_data = image_reader.read(z_start=z_start, z_end=z_end, out_dtype=np.float32)
         
-        # --- Padding logic for model compatibility (e.g. SwinUNETR requires divisibility by 32) ---
-        curr_shape = img_data.shape
-        # Ensure volume is at least as large as patch_size
-        pad_v = []
-        self.pad_z_before = 0
-        for i in range(3):
-            total_pad = max(0, patch_size[i] - curr_shape[i])
-            if i == 0: # Z-axis: symmetric padding
-                self.pad_z_before = total_pad // 2
-                pad_after = total_pad - self.pad_z_before
-                pad_v.append((self.pad_z_before, pad_after))
-            else: # Y, X axes: end padding
-                pad_v.append((0, total_pad))
-        
-        if any(sum(p) > 0 for p in pad_v):
-            img_data = np.pad(img_data, pad_v, mode='constant', constant_values=0)
-            logger.debug(f"Chunk padded from {curr_shape} to {img_data.shape} to fit patch_size {patch_size} (Z-symmetric)")
+        # Pad volume to ensure it fits at least one patch (Z: symmetric, Y/X: end)
+        vol_pad = _volume_pad_widths(img_data.shape, patch_size)
+        self.pad_z_before = vol_pad[0][0]
+        if any(before + after > 0 for before, after in vol_pad):
+            orig_shape = img_data.shape
+            img_data = _pad_image(img_data, vol_pad, pad_mode, fill=0.0)
+            logger.debug(f"Chunk padded {orig_shape} -> {img_data.shape} to fit patch_size {patch_size} (mode={pad_mode})")
 
         # 2. Global normalization
         normalizer = build_normalizer_from_config(full_config, image_reader, mode="inference")
@@ -308,18 +304,13 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         # 4. Pre-extract all patches (this ensures workers do zero slicing/computation)
         img_patches = extract_data_from_indices(img_data, raw_indices, as_stack=True)
         
-        # 5. Final safety padding: Ensure each patch dimension is divisible by 32
-        # This handles cases where patch_size itself is not divisible by 32.
+        # 5. Pad patches to divisibility-by-32 required by SwinUNETR (end-only, N dim untouched)
         n, d, h, w = img_patches.shape
-        # Only pad depth if it's already > 1 (3D mode)
-        pad_d = (32 - d % 32) % 32 if d > 1 else 0
-        pad_h = (32 - h % 32) % 32
-        pad_w = (32 - w % 32) % 32
-        
+        pad_d, pad_h, pad_w = _div32_pad_widths(d, h, w, is_3d=(d > 1))
         if pad_d > 0 or pad_h > 0 or pad_w > 0:
-            bg_val = normalizer.get_background_value()
-            img_patches = np.pad(img_patches, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant', constant_values=bg_val)
-            logger.debug(f"Patches padded from {(d, h, w)} to {(img_patches.shape[1], img_patches.shape[2], img_patches.shape[3])} for model compatibility.")
+            patch_pad = ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w))
+            img_patches = _pad_image(img_patches, patch_pad, pad_mode, fill=normalizer.get_background_value())
+            logger.debug(f"Patches div-32 padded: ({d},{h},{w}) -> ({d+pad_d},{h+pad_h},{w+pad_w})")
 
         # 6. Pack into a single contiguous shared tensor
         # Shape: (N_patches, 1, D_padded, H_padded, W_padded)

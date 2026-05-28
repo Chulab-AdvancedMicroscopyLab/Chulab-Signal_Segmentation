@@ -46,7 +46,7 @@ train_transform = Compose([
     AsDiscreted(keys=["mask"], threshold=0.5),
     RandFlipd(keys=["image", "mask"], spatial_axis=1, prob=0.5),
     RandAdjustContrastd(keys=["image"], prob=0.3),
-    RandGaussianNoised(keys=["image"], prob=0.4, mean=0.0, std=0.1),
+    # RandGaussianNoised(keys=["image"], prob=0.4, mean=0.0, std=0.1),
     RandBiasFieldd(keys=["image"], prob=0.2),
     RandShiftIntensityd(keys=["image"], offsets=0.2, prob=0.3),
     RandScaleIntensityd(keys=["image"], factors=0.2, prob=0.3),
@@ -223,7 +223,9 @@ def main():
     artifact_path = os.path.join(model_save_path, "artifacts")
     for p in [viz_path, weight_path, artifact_path]: os.makedirs(p, exist_ok=True)
 
-    log_path = os.path.join(artifact_path, "train.log")
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(artifact_path, f"train_{timestamp}.log")
     file_handler = logging.FileHandler(log_path, encoding='utf-8')
     file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logging.getLogger().addHandler(file_handler)

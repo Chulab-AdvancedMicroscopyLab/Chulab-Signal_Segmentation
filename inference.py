@@ -205,7 +205,7 @@ def process_volume(volume_path: Path, output_dir: Path, output_name: str, model:
     resources = full_config.get("resources", {})
     io_workers = resources.get("io_workers", 4)
 
-    method = preprocess_config.get("method", "z-score")
+    method = preprocess_config.get("normalize_mode", "z-score")
     data_reader = FileReader(
         volume_path,
         io_workers=io_workers,
@@ -308,7 +308,13 @@ def main():
         
     root_input = Path(input_path_str).resolve()
     root_output = Path(output_path_str).resolve()
-    
+
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_handler = logging.FileHandler(root_output / f"inference_{timestamp}.log", encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logging.getLogger().addHandler(file_handler)
+
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     logging.info(f"Loading model: {model_path}")
     model = load_checkpoint(model_path).to(device)

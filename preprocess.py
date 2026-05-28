@@ -48,7 +48,7 @@ def main():
     # 1. Initialize FileReader
     logger.info(f"Reading volume info from {input_path}...")
     
-    method = preprocess_config.get("method", "z-score")
+    method = preprocess_config.get("normalize_mode", "z-score")
     reader = FileReader(
         input_path, 
         compute_stats=True, 
@@ -68,9 +68,11 @@ def main():
     if normalizer.method == "z-score":
         logger.info(f"Mean:   {normalizer.mean:.6f}")
         logger.info(f"Std:    {normalizer.std:.6f} (Multiplier: {normalizer.std_multiplier})")
-    elif normalizer.method == "min-max":
+    elif normalizer.method in ("min-max", "min-max-gamma"):
         logger.info(f"Min:    {normalizer.min_v:.6f}")
         logger.info(f"Max:    {normalizer.max_v:.6f}")
+        if normalizer.method == "min-max-gamma":
+            logger.info(f"Gamma:  {normalizer.gamma:.4f}")
     
     if preprocess_config.get("low_cut") is not None:
         logger.info(f"Low Cut:  {preprocess_config.get('low_cut')}")
