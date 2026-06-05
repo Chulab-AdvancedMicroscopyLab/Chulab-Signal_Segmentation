@@ -1,153 +1,237 @@
 {
-    "resources": {
-        "numba_threads": 16,
-        "dask_threads": 16,
-        "io_workers": 8,
-        "metrics_workers": 16,
-        "memory_limit": 64
+  "resources": {
+    "numba_threads": 16,
+    "dask_threads": 16,
+    "io_workers": 8,
+    "metrics_workers": 16,
+    "memory_limit": 64
+  },
+  "normalization": {
+    "description": "Registry of available intensity normalization methods.",
+    "z-score": {
+      "std_multiplier": 1.0
     },
-    "normalization": {
-        "description": "Registry of available intensity normalization methods.",
-        "z-score": {
-            "std_multiplier": 1.0
-        },
-        "min-max": {},
-        "histogram": {
-            "bins": 1024
-        }
+    "min-max": {},
+    "histogram": {
+      "bins": 1024
     },
-    "outputs": {
-        "description": "Registry of global defaults for each output format.",
-        "zarr": {
-            "chunk_size": [128, 128, 128]
-        },
-        "ome-zarr": {
-            "n_level": 5,
-            "resize_factor": 2,
-            "chunk_size": [128, 128, 128]
-        },
-        "scroll-tiff": {
-            "axis": 1
-        },
-        "single-tiff": {}
+    "min-max-gamma": {
+      "gamma": 2.2
+    }
+  },
+  "outputs": {
+    "description": "Registry of global defaults for each output format.",
+    "zarr": {
+      "chunk_size": [
+        128,
+        128,
+        128
+      ]
     },
-    "model": {
-        "description": "Registry of available model architectures and their default parameters.",
-        "unet": {
-            "spatial_dims": 3,
-            "in_channels": 1,
-            "out_channels": 1,
-            "channels": [32, 64, 128, 256, 512],
-            "strides": [2, 2, 2, 2],
-            "num_res_units": 2,
-            "dropout": 0.1
-        },
-        "attention_unet": {
-            "spatial_dims": 3,
-            "in_channels": 1,
-            "out_channels": 1,
-            "channels": [32, 64, 128, 256, 512],
-            "strides": [2, 2, 2, 2],
-            "dropout": 0.1
-        },
-        "swin_unetr": {
-            "spatial_dims": 3,
-            "in_channels": 1,
-            "out_channels": 1,
-            "feature_size": 48,
-            "use_checkpoint": false
-        },
-        "vnet": {
-            "spatial_dims": 3,
-            "in_channels": 1,
-            "out_channels": 1,
-            "dropout_prob": 0.5
-        }
+    "ome-zarr": {
+      "n_level": 5,
+      "resize_factor": 2,
+      "chunk_size": [
+        128,
+        128,
+        128
+      ]
+    },
+    "scroll-tiff": {
+      "axis": 1
+    },
+    "single-tiff": {}
+  },
+  "model": {
+    "description": "Registry of available model architectures and their default parameters.",
+    "unet": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "channels": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ],
+      "strides": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "num_res_units": 2,
+      "dropout": 0.1
+    },
+    "attention_unet": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "channels": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ],
+      "strides": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "dropout": 0.1
+    },
+    "swin_unetr": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "feature_size": 48,
+      "use_checkpoint": false
+    },
+    "vnet": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "dropout_prob": 0.5
+    }
+  },
+  "loss": {
+    "description": "Registry of available loss functions and their default parameters.",
+    "dice": {
+      "smooth": 1e-06
+    },
+    "focal": {
+      "alpha": 0.8,
+      "gamma": 2.0
+    },
+    "tversky": {
+      "alpha": 0.5,
+      "beta": 0.5,
+      "smooth": 1e-06
+    },
+    "log_cosh_dice": {
+      "smooth": 1e-06
+    },
+    "bce": {}
+  },
+  "metrics": {
+    "description": "Registry of available metrics and their default parameters.",
+    "dice_soft": {
+      "smooth": 1e-05
+    },
+    "dice_hard": {
+      "smooth": 1e-05
+    },
+    "iou": {
+      "smooth": 1e-05
+    },
+    "bce": {},
+    "mcc": {},
+    "cldice": {},
+    "hausdorff": {
+      "hd_percentile": 95.0
+    },
+    "pr_auc": {}
+  },
+  "train": {
+    "device": "cuda:1",
+    "data_path": [
+      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/training-data/Hung-Yu-3D"
+    ],
+    "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos",
+    "model_name": "Swin_UNETR_v2",
+    "model_type": "swin_unetr",
+    "input_name": "images",
+    "mask_name": "images_mask",
+    "preprocess": {
+      "normalize_mode": "z-score",
+      "pad_mode": "reflect",
+      "sample_rate": 1.0,
+      "low_cut": null,
+      "high_cut": null
     },
     "loss": {
-        "description": "Registry of available loss functions and their default parameters.",
-        "dice": { "smooth": 1e-6 },
-        "focal": { "alpha": 0.8, "gamma": 2.0 },
-        "tversky": { "alpha": 0.5, "beta": 0.5, "smooth": 1e-6 },
-        "log_cosh_dice": { "smooth": 1e-6 },
-        "bce": {}
+      "dice": 1,
+      "focal": 0.2
     },
-    "metrics": {
-        "description": "Registry of available metrics and their default parameters.",
-        "dice_soft": { "smooth": 1e-5 },
-        "dice_hard": { "smooth": 1e-5 },
-        "iou": { "smooth": 1e-5 },
-        "bce": {},
-        "mcc": {},
-        "cldice": {},
-        "hausdorff": { "hd_percentile": 95.0 },
-        "pr_auc": {}
+    "metrics": [
+      "dice_soft",
+      "dice_hard",
+      "iou"
+    ],
+    "metric_interval": 1,
+    "val_ratio": 0.2,
+    "seed": 42,
+    "training_epochs": 150,
+    "training_batch_size": 8,
+    "training_num_workers": 8,
+    "training_patch_size": [
+      64,
+      64,
+      64
+    ],
+    "training_overlay": [
+      0,
+      0,
+      0
+    ],
+    "training_neg_keep_ratio": 1.0,
+    "training_resize_factor": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "learning_rate": 0.0001,
+    "visualize_preview": true
+  },
+  "inference": {
+    "device": "cuda:1",
+    "input_path": "/mnt/DAS218T/Ian_Huang/project_greencomputing/display_data/UNet_CFOs",
+    "output_path": "/mnt/DAS218T/Ian_Huang/project_greencomputing/display_data/UNet_CFOs",
+    "input_name": "images",
+    "output_name": "images_mask_myver",
+    "preprocess": {
+      "normalize_mode": "z-score",
+      "pad_mode": "reflect",
+      "sample_rate": 1.0,
+      "low_cut": null,
+      "high_cut": null
     },
-    "train": {
-        "device": "cuda:0",
-        "data_path": ["/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu/training-data/Hung-Yu-3D"],
-        "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos",
-        "model_name": "Swin_UNETR_v1",
-        "model_type": "swin_unetr",
-        "input_name": "images",
-        "mask_name": "images_mask",
-        "preprocess": { 
-            "method": "histogram", 
-            "sample_rate": 1.0,
-            "low_cut": null,
-            "high_cut": null
-        },
-        "loss": {
-            "tversky": 1.0, 
-            "focal": 1.0
-        },
-        "metrics": ["dice_soft", "dice_hard", "iou"],
-        "metric_interval": 5,
-        "val_ratio": 0.2,
-        "seed": 42,
-        "training_epochs": 150,
-        "training_batch_size": 8,
-        "training_num_workers": 8,
-        "training_patch_size": [64, 64, 64],
-        "training_overlay": [0, 0, 0],
-        "training_neg_keep_ratio": 1.0,
-        "training_resize_factor": [1.0, 1.0, 1.0],
-        "learning_rate": 1e-4,
-        "visualize_preview": true
-    },
-    "inference": {
-        "device": "cuda:0",
-        "input_path": "/mnt/DAS218T/Ian_Huang/project_20260224_Shaun_BV/",
-        "output_path": "/mnt/DAS218T/Ian_Huang/project_20260224_Shaun_BV/",
-        "input_name": "Ex_640_Em_690-50_Ch3_stitched_test",
-        "output_name": "Ex_640_Em_690-50_Ch3_stitched_test_mask",
-        "preprocess": { 
-            "method": "z-score", 
-            "sample_rate": 0.1,
-            "low_cut": null,
-            "high_cut": null
-        },
-        "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos/Swin_UNETR_v1/weights/Swin_UNETR_v1.pth",
-        "batch_size": 16,
-        "inference_patch_size": [64, 64, 64],
-        "inference_overlay": [16, 16, 16],
-        "inference_resize_factor": [1.0, 1.0, 1.0],
-        "output": {
-            "type": "Zarr",
-            "dtype": "uint16",
-            "resize_order": 0
-        }
-    },
-    "converter": [
-        {
-            "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_55/Ex_647_Em_690_stitched.zarr",
-            "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_55",
-            "output": {
-                "type": "Scroll-Tiff",
-                "dtype": "uint16",
-                "resize_shape": null,
-                "resize_order": 0
-            }
-        }
-    ]
+    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos/UNet_v0/weights/UNet_v0.pth",
+    "batch_size": 16,
+    "inference_patch_size": [
+      64,
+      64,
+      64
+    ],
+    "inference_overlay": [
+      16,
+      16,
+      16
+    ],
+    "inference_resize_factor": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "output": {
+      "type": "Scroll-Tiff",
+      "dtype": "uint16",
+      "resize_order": 0
+    }
+  },
+  "converter": [
+    {
+      "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_55/Ex_647_Em_690_stitched.zarr",
+      "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_55",
+      "output": {
+        "type": "Scroll-Tiff",
+        "dtype": "uint16",
+        "resize_shape": null,
+        "resize_order": 0
+      }
+    }
+  ]
 }

@@ -24,6 +24,23 @@ def _normalize_minmax_inplace_numba(data, min_v, max_v):
         flat[i] = (flat[i] - min_v) * inv_diff
 
 @numba.njit(parallel=True, nogil=True)
+def _normalize_minmax_gamma_inplace_numba(data, min_v, max_v, gamma):
+    """Parallel in-place Min-Max normalization followed by gamma correction."""
+    flat = data.ravel()
+    n = flat.size
+    eps = 1e-8
+    diff = max_v - min_v
+    inv_diff = 1.0 / (diff + eps)
+    inv_gamma = 1.0 / (gamma + eps)
+    for i in numba.prange(n):
+        v = (flat[i] - min_v) * inv_diff
+        if v < 0.0:
+            v = 0.0
+        elif v > 1.0:
+            v = 1.0
+        flat[i] = v ** inv_gamma
+
+@numba.njit(parallel=True, nogil=True)
 def _apply_histogram_mapping_numba(data, lookup_table, range_min, range_max):
     """Parallel in-place histogram mapping using a lookup table and linear interpolation."""
     flat = data.ravel()
@@ -68,7 +85,7 @@ class Normalizer:
                     preprocess-level parameters.
             volume_stats: Dictionary containing 'mean', 'std', 'min', 'max', and optionally 'histogram'.
         """
-        self.method = config.get("method", "z-score").lower()
+        self.method = config.get("normalize_mode", "z-score").lower()
         
         # Z-score params
         self.mean = volume_stats.get("mean", 0.0)
@@ -79,6 +96,7 @@ class Normalizer:
         # Min-Max params
         self.min_v = volume_stats.get("min", 0.0)
         self.max_v = volume_stats.get("max", 1.0)
+        self.gamma = float(config.get("gamma", 1.0))
         
         # Histogram params
         self.bins = config.get("bins", 256)
@@ -108,6 +126,8 @@ class Normalizer:
             _normalize_zscore_inplace_numba(data, self.mean, self.effective_std)
         elif self.method == "min-max":
             _normalize_minmax_inplace_numba(data, self.min_v, self.max_v)
+        elif self.method == "min-max-gamma":
+            _normalize_minmax_gamma_inplace_numba(data, self.min_v, self.max_v, self.gamma)
         elif self.method == "histogram":
             if self.cdf is not None:
                 # Use actual volume range for mapping
@@ -122,9 +142,13 @@ class Normalizer:
         if self.method == "z-score":
             eps = 1e-8
             return (0.0 - self.mean) / (self.effective_std + eps)
-        elif self.method == "min-max":
+        elif self.method in ("min-max", "min-max-gamma"):
             eps = 1e-8
-            return (0.0 - self.min_v) / (self.max_v - self.min_v + eps)
+            v = (0.0 - self.min_v) / (self.max_v - self.min_v + eps)
+            v = max(0.0, min(1.0, v))
+            if self.method == "min-max-gamma":
+                v = v ** (1.0 / (self.gamma + eps))
+            return v
         elif self.method == "histogram":
             if self.cdf is not None:
                 return float(self.cdf[0])
@@ -143,7 +167,7 @@ def build_normalizer_from_config(full_config: Dict[str, Any], reader: Any, mode:
     mode_config = full_config.get(mode, {})
     preprocess_config = mode_config.get("preprocess", {})
     
-    method = preprocess_config.get("method", "z-score")
+    method = preprocess_config.get("normalize_mode", "z-score")
     
     # Merge parameters: Registry (global defaults) + Preprocess (local overrides)
     method_defaults = registry.get(method, {})

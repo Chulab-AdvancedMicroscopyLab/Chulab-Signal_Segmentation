@@ -86,7 +86,6 @@ def write_chunk_to_zarr(array: np.ndarray, chunk_shape: tuple[int, int, int], ta
         target[dest_region] = array[z0:z1, y0:y1, x0:x1]
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        logger.info(f"Writing block of shape {array.shape} to Zarr")
         for z in range(0, dz, cz):
             for y in range(0, dy, cy):
                 for x in range(0, dx, cx):
@@ -188,8 +187,8 @@ def resize_xy_block_to_temp(
             for i in range(block.shape[0])
         ]
         arr = _collect_resized_slices(executor, tasks, _resize_xy_worker, stack_axis=0)
-    
-    logger.info(f"Writing volume to temp z: {z0} - {z1}")
+
+    logger.info(f"Writing to temp z: {z0} - {z1}, y: 0 - {target_y}, x: 0 - {target_x}")
     write_chunk_to_zarr(
         arr,
         chunk_size,
@@ -247,8 +246,8 @@ def resize_xy_volume_to_temp(
                 for i in range(block_chunk.shape[0])
             ]
             arr = _collect_resized_slices(executor, tasks, _resize_xy_worker, stack_axis=0)
-    
-    logger.info(f"Writing volume to temp z: {z0} - {z1}")
+
+    logger.info(f"Writing to temp z: {z0} - {z1}, y: 0 - {target_y}, x: 0 - {target_x}")
     write_chunk_to_zarr(
         arr,
         chunk_size,

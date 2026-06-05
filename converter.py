@@ -229,7 +229,7 @@ def run_task(task_config, full_config):
             logging.error(f"Failed to initialize reader for {input_path}: {e}")
             continue
 
-        resize_shape = task_config.get("resize_shape")
+        resize_shape = output_config.get("resize_shape")
         full_res_shape = tuple(resize_shape) if resize_shape else reader.volume_shape
         output_dtype = output_config.get("dtype")
         
@@ -265,6 +265,14 @@ def run_task(task_config, full_config):
                 downscale_factor=final_type_params.get("resize_factor", output_config.get("resize_factor", 2)),
                 resize_order=output_config.get("resize_order", 0),
                 scroll_axis=final_type_params.get("axis", task_config.get("scroll_axis", 0))
+            )
+
+            logging.info(
+                f"  Output params: type={ot_str}, dtype={output_dtype}, "
+                f"input_shape={reader.volume_shape}, resize_shape={full_res_shape}, "
+                f"resize_order={helper_args.resize_order}, chunk_size={chunk_tuple}, "
+                f"levels={helper_args.levels}, downscale_factor={helper_args.downscale_factor}, "
+                f"scroll_axis={helper_args.scroll_axis}"
             )
 
             if io_output_type in ["ome-zarr", "zarr"]:
