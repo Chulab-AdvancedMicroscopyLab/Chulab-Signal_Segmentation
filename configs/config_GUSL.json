@@ -1,0 +1,129 @@
+{
+  "resources": {
+    "numba_threads": 16,
+    "io_workers": 8,
+    "memory_limit": 64
+  },
+
+  "normalization": {
+    "description": "Registry of intensity normalization methods.",
+    "z-score": { "std_multiplier": 1 },
+    "min-max": {},
+    "histogram": { "bins": 1024 },
+    "min-max-gamma": { "gamma": 5 }
+  },
+
+  "model": {
+    "gusl": {
+      "_comment_perlevel": "Per-level params listed deepest_level → level 1. Single scalar broadcasts to all levels.",
+
+      "_comment_pyramid": "Pyramid depth — number of coarse-to-fine levels trained.",
+      "deepest_level": 2,
+
+      "_comment_saab": "Saab PCA patch window: spatial (kernel_size) and Z (kernel_depth) extent of each filter.",
+      "kernel_size":  [3, 3],
+      "kernel_depth": [3, 3],
+
+      "_comment_neigh": "Neighborhood aggregation around each pixel: window size/depth; stride downsamples spatial context.",
+      "neigh_size":   [3, 3],
+      "neigh_depth":  [1, 1],
+      "neigh_stride": [2, 2],
+
+      "_comment_grad": "Gradient features: toggle on/off per level; size/depth = Sobel window extent.",
+      "use_grad":     [true, true],
+      "grad_size":    [3, 5],
+      "grad_depth":   [3, 3],
+
+      "_comment_rft": "DualRFT feature selection: batch_centers = pixels sampled for Saab fit; n_bins = histogram buckets; n_selected = features kept; rft_sample_frac = fraction of pixels used to fit RFT (null/1.0 = all, 0.3-0.5 is usually sufficient).",
+      "rft_sample_frac": 0.5,
+      "batch_centers": 200000,
+      "n_bins":       [32, 32],
+      "n_selected":   [500, 500],
+
+      "_comment_lnt": "LNT leaf-node linear transform: depth/num_tree control the XGBoost sub-tree used to partition leaves; lnt_sample_frac = fraction of pixels used for LDA/linear fit (null/1.0 = all, 0.3-0.5 sufficient).",
+      "lnt_sample_frac": 0.3,
+      "lnt_depth":    [3, 3],
+      "lnt_num_tree": [150, 150],
+
+      "_comment_xgb": "XGBoost final regressor: n_estimators = tree count; max_depth = tree depth (complexity vs overfitting); learning_rate = step size; early_stopping_rounds = halt when val loss stalls.",
+      "n_estimators": 5000,
+      "max_depth":    4,
+      "learning_rate": 0.03,
+      "early_stopping_rounds": 30
+    }
+  },
+
+  "train": {
+    "device": "cuda:0",
+    "data_path": [
+      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Lectin/green_computing/training-data/YIN-HSU-3D-special"
+    ],
+    "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin",
+    "model_name": "GUSL_v0",
+    "model_type": "gusl",
+    "input_name": "images",
+    "mask_name":  "images_mask",
+
+    "preprocess": {
+      "normalize_mode": "z-score",
+      "pad_mode": "reflect",
+      "sample_rate": 1.0,
+      "low_cut": null,
+      "high_cut": null
+    },
+
+    "_comment_patch": "training_patch_size = [D, H, W]. base_size is auto-derived from H.",
+    "training_patch_size": [16, 64, 64],
+    "training_overlay":    [0,  0,   0],
+    "training_neg_keep_ratio": 0.2,
+
+    "val_ratio": 0.1,
+    "seed": 42,
+    "run_level": null,
+
+    "gusl": {
+      "_comment_selection": "Sample selection: keep_frac = fraction of pixels kept after thinning; low/high thresholds define boundary band for pos/neg sampling.",
+      "batch_size": 4,
+      "keep_frac": 0.15,
+      "low1": 0.0,
+      "low2": 0.05,
+      "high1": 0.1,
+      "high2": 0.4,
+
+      "_comment_percentage": "Per-level fraction of data used for encode (FeatGen/RFT) and decode (XGBoost) training. Must match deepest_level length.",
+      "encode_percentage":     [0.3, 0.1],
+      "decode_percentage":     [0.5, 0.2],
+      "val_encode_percentage": [0.3, 0.1],
+      "val_decode_percentage": [0.5, 0.2]
+    }
+  },
+
+  "inference": {
+    "device": "cuda:0",
+    "input_path":  "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special/00",
+    "input_name":  "images",
+    "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special/00",
+    "output_name": "images_mask_GUSL",
+    "model_path":  "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos/GUSL_v0/gusl_model.joblib",
+
+    "preprocess": {
+      "normalize_mode": "z-score",
+      "pad_mode": "reflect",
+      "sample_rate": 0.1,
+      "low_cut": null,
+      "high_cut": null
+    },
+
+    "_comment_patch": "z_chunk_depth = Z frames loaded at once (bounds RAM for IO). inference_pixel_batch = pixels per predict batch; increase for speed, decrease if OOM.",
+    "z_chunk_depth":         16,
+    "z_chunk_overlap":       0,
+    "inference_pixel_batch": 1000000,
+
+    "output": {
+      "type": "Scroll-Tiff",
+      "dtype": "uint8",
+      "_comment_threshold": "null = soft [0,255] output; number = binary mask (pixels >= threshold → 255, else 0).",
+      "threshold": 128
+    }
+  }
+}

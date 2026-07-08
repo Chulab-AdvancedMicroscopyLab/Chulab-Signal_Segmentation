@@ -22,20 +22,12 @@
   "outputs": {
     "description": "Registry of global defaults for each output format.",
     "zarr": {
-      "chunk_size": [
-        128,
-        128,
-        128
-      ]
+      "chunk_size": [128, 128, 128]
     },
     "ome-zarr": {
       "n_level": 5,
       "resize_factor": 2,
-      "chunk_size": [
-        128,
-        128,
-        128
-      ]
+      "chunk_size": [128, 128, 128]
     },
     "scroll-tiff": {
       "axis": 1
@@ -48,19 +40,8 @@
       "spatial_dims": 3,
       "in_channels": 1,
       "out_channels": 1,
-      "channels": [
-        32,
-        64,
-        128,
-        256,
-        512
-      ],
-      "strides": [
-        2,
-        2,
-        2,
-        2
-      ],
+      "channels": [32, 64, 128, 256],
+      "strides": [1, 2, 2],
       "num_res_units": 2,
       "dropout": 0.1
     },
@@ -68,19 +49,8 @@
       "spatial_dims": 3,
       "in_channels": 1,
       "out_channels": 1,
-      "channels": [
-        32,
-        64,
-        128,
-        256,
-        512
-      ],
-      "strides": [
-        2,
-        2,
-        2,
-        2
-      ],
+      "channels": [32, 64, 128, 256],
+      "strides": [1, 2, 2],
       "dropout": 0.1
     },
     "swin_unetr": {
@@ -136,15 +106,19 @@
     "pr_auc": {}
   },
   "train": {
+    "_comment_device": "GPU device for training, e.g. 'cuda:0', 'cuda:1', or 'cpu'.",
     "device": "cuda:1",
+    "_comment_paths": "data_path = list of training data directories; save_path = root dir for weights and logs.",
     "data_path": [
-      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/training-data/Hung-Yu-3D"
+      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/training-data/Hung-Yu-3D-special"
     ],
     "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos",
-    "model_name": "Swin_UNETR_v2",
-    "model_type": "swin_unetr",
+    "_comment_model": "model_name = experiment subfolder under save_path; model_type = architecture key from the model registry above.",
+    "model_name": "UNet_v0",
+    "model_type": "unet",
     "input_name": "images",
     "mask_name": "images_mask",
+    "_comment_preprocess": "normalize_mode = z-score|min-max|histogram|min-max-gamma; high_cut clips intensity before normalization (null = no clip).",
     "preprocess": {
       "normalize_mode": "z-score",
       "pad_mode": "reflect",
@@ -152,46 +126,40 @@
       "low_cut": null,
       "high_cut": null
     },
+    "_comment_loss": "Weighted sum of loss functions. Keys are loss names from the loss registry, values are their scalar weights.",
     "loss": {
       "dice": 1,
       "focal": 0.2
     },
+    "_comment_metrics": "Metrics evaluated each metric_interval epochs. Keys from the metrics registry.",
     "metrics": [
       "dice_soft",
       "dice_hard",
       "iou"
     ],
     "metric_interval": 1,
-    "val_ratio": 0.2,
+    "val_ratio": 0.1,
     "seed": 42,
     "training_epochs": 150,
     "training_batch_size": 8,
     "training_num_workers": 8,
-    "training_patch_size": [
-      64,
-      64,
-      64
-    ],
-    "training_overlay": [
-      0,
-      0,
-      0
-    ],
+    "_comment_patch": "training_patch_size = [D, H, W] of each 3D crop fed to the model; training_overlay = voxel overlap between adjacent crops; training_neg_keep_ratio = fraction of background-only patches retained.",
+    "training_patch_size": [16, 64, 64],
+    "training_overlay": [0, 0, 0],
     "training_neg_keep_ratio": 1.0,
-    "training_resize_factor": [
-      1.0,
-      1.0,
-      1.0
-    ],
+    "training_resize_factor": [1.0, 1.0, 1.0],
+    "_comment_training": "training_epochs = total epochs; training_batch_size = patches per GPU step; learning_rate = Adam optimizer LR.",
     "learning_rate": 0.0001,
     "visualize_preview": true
   },
   "inference": {
     "device": "cuda:1",
-    "input_path": "/mnt/DAS218T/Ian_Huang/project_greencomputing/display_data/UNet_CFOs",
-    "output_path": "/mnt/DAS218T/Ian_Huang/project_greencomputing/display_data/UNet_CFOs",
+    "_comment_paths": "input_path / input_name = source volume location; output_path / output_name = destination for the predicted mask.",
+    "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special/00",
+    "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special/00",
     "input_name": "images",
-    "output_name": "images_mask_myver",
+    "output_name": "images_mask_unet_v0",
+    "_comment_preprocess": "Same normalization applied at inference. sample_rate controls fraction of voxels sampled for global stats computation.",
     "preprocess": {
       "normalize_mode": "z-score",
       "pad_mode": "reflect",
@@ -200,22 +168,12 @@
       "high_cut": null
     },
     "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos/UNet_v0/weights/UNet_v0.pth",
+    "_comment_patch": "inference_patch_size = [D, H, W] sliding window; inference_overlay = voxel overlap between windows (larger = smoother tile boundaries, slower).",
     "batch_size": 16,
-    "inference_patch_size": [
-      64,
-      64,
-      64
-    ],
-    "inference_overlay": [
-      16,
-      16,
-      16
-    ],
-    "inference_resize_factor": [
-      1.0,
-      1.0,
-      1.0
-    ],
+    "inference_patch_size": [16, 64, 64],
+    "inference_overlay": [8, 16, 16],
+    "inference_resize_factor": [1.0, 1.0, 1.0],
+    "_comment_output": "type = output format (Zarr|Scroll-Tiff|Single-Tiff); dtype = output bit depth; resize_order = interpolation order for optional spatial resize.",
     "output": {
       "type": "Scroll-Tiff",
       "dtype": "uint16",

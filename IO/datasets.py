@@ -330,6 +330,205 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
             is_patch_mode=True
         )
 
+class GUSLDataset:
+    """
+    Sliding-window patch dataset for GUSLModel training.
+
+    Extracts (D, H, W) patches from one or more volumes, stacks them into a
+    single (N_patches * D, H, W) numpy array that GUSLModel.fit() expects.
+    Uses the same FileReader + Normalizer pipeline as TrainMicroscopyDataset.
+
+    Patch boundaries introduce small z-neighbourhood artifacts, but since
+    GUSL_3D was already designed to stack independent frames along depth this
+    effect is negligible.
+    """
+
+    def __init__(self, imgs: np.ndarray, msks: np.ndarray, names: List[str]):
+        """
+        Args
+        ----
+        imgs  : (N, H, W) float32 — stacked 2D frames from all patches.
+        msks  : (N, H, W) float32 — corresponding masks.
+        names : length-N list of unique base names used for intermediate PNGs.
+        """
+        assert imgs.shape == msks.shape, "imgs/msks shape mismatch"
+        assert len(names) == imgs.shape[0], "names length must match N"
+        self.imgs  = imgs
+        self.msks  = msks
+        self.names = names
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_config(
+        cls,
+        full_config: dict,
+        mode: str = "train",
+    ) -> "GUSLDataset":
+        """
+        Build a GUSLDataset from a config dict (same format as config_vessel.json).
+
+        Reads ``full_config["train"]`` for paths / patch geometry / normalisation.
+        Supports multi-volume lists: ``img_path`` / ``mask_path`` can be strings
+        or lists of strings.
+        """
+        from utils.normalization import build_normalizer_from_config
+
+        train_cfg = full_config.get("train", {})
+        resources = full_config.get("resources", {})
+        io_workers = resources.get("io_workers", 4)
+
+        pre_cfg   = train_cfg.get("preprocess", {})
+        low_cut   = pre_cfg.get("low_cut")
+        high_cut  = pre_cfg.get("high_cut")
+        sample_rate = pre_cfg.get("sample_rate", 1.0)
+        normalize_mode = pre_cfg.get("normalize_mode", "z-score")
+        pad_mode  = pre_cfg.get("pad_mode", "constant")
+
+        patch_size   = tuple(train_cfg.get("training_patch_size", [32, 256, 256]))
+        overlap      = tuple(train_cfg.get("training_overlay",    [0,   0,   0]))
+        neg_ratio    = train_cfg.get("training_neg_keep_ratio", 1.0)
+        input_name   = train_cfg.get("input_name",  "images")
+        mask_name    = train_cfg.get("mask_name",   "images_mask")
+
+        img_roots  = train_cfg.get("img_path",  train_cfg.get("data_path"))
+        mask_roots = train_cfg.get("mask_path", train_cfg.get("data_path"))
+        if img_roots is None or mask_roots is None:
+            raise ValueError("Config missing 'img_path'/'mask_path' (or 'data_path') in 'train'.")
+        if isinstance(img_roots,  str): img_roots  = [img_roots]
+        if isinstance(mask_roots, str): mask_roots = [mask_roots]
+
+        # Broadcast single-element lists
+        if len(img_roots) == 1 and len(mask_roots) > 1:
+            img_roots = img_roots * len(mask_roots)
+        if len(mask_roots) == 1 and len(img_roots) > 1:
+            mask_roots = mask_roots * len(img_roots)
+        if len(img_roots) != len(mask_roots):
+            raise ValueError("img_path and mask_path lists must have equal length.")
+
+        # Discover (image_dir, mask_dir) pairs using the same layout as TrainMicroscopyDataset
+        volumes_found: List[Tuple[Path, Path]] = []
+        for img_root, msk_root in zip(img_roots, mask_roots):
+            img_root_path = Path(img_root)
+            msk_root_path = Path(msk_root)
+            for p in img_root_path.rglob("*"):
+                if p.is_dir() and p.name == input_name:
+                    rel_path = p.parent.relative_to(img_root_path)
+                    m_path   = msk_root_path / rel_path / mask_name
+                    if m_path.exists() and m_path.is_dir():
+                        volumes_found.append((p, m_path))
+
+        if not volumes_found:
+            # Fallback: treat img_root directly as volume paths (not subdirectory layout)
+            for img_root, msk_root in zip(img_roots, mask_roots):
+                volumes_found.append((Path(img_root), Path(msk_root)))
+
+        all_img_frames: List[np.ndarray] = []
+        all_msk_frames: List[np.ndarray] = []
+        all_names:      List[str]        = []
+
+        for vol_idx, (img_path, msk_path) in enumerate(sorted(volumes_found)):
+            vol_tag = f"v{vol_idx:03d}_{img_path.parent.name}"
+
+            img_reader = FileReader(
+                img_path, io_workers=io_workers,
+                compute_stats=True, stats_sample_rate=sample_rate,
+                low_cut=low_cut, high_cut=high_cut,
+                compute_histogram=(normalize_mode == "histogram"),
+            )
+            img_data = img_reader.read(out_dtype=np.float32)
+
+            msk_reader = FileReader(msk_path, io_workers=io_workers)
+            msk_data   = msk_reader.read(out_dtype=np.float32)
+
+            # Pad to fit at least one patch
+            vol_pad = _volume_pad_widths(img_data.shape, patch_size)
+            if any(a + b > 0 for a, b in vol_pad):
+                img_data = _pad_image(img_data, vol_pad, pad_mode, fill=0.0)
+                msk_data = _pad_image(msk_data, vol_pad, pad_mode, fill=0.0)
+
+            # Normalize using global volume stats
+            normalizer = build_normalizer_from_config(full_config, img_reader, mode=mode)
+            img_data   = normalizer(img_data)
+
+            # Generate + filter patch indices
+            indices  = generate_patch_indices(img_data.shape, patch_size, overlap)
+            filtered = filter_indices_by_mask(msk_data, indices, neg_ratio)
+
+            logger.info(f"[GUSLDataset] vol={vol_tag}: {len(filtered)} patches from {len(indices)} total.")
+
+            for patch_idx, ps in enumerate(filtered):
+                # Extract patch arrays (D, H, W)
+                img_patch = img_data[ps.z_slice, ps.y_slice, ps.x_slice].copy()
+                msk_patch = msk_data[ps.z_slice, ps.y_slice, ps.x_slice].copy()
+
+                D = img_patch.shape[0]
+                all_img_frames.append(img_patch)
+                all_msk_frames.append(msk_patch)
+                # One unique name per 2-D frame within this patch
+                for d in range(D):
+                    all_names.append(f"{vol_tag}_p{patch_idx:04d}_z{d:04d}")
+
+        if not all_img_frames:
+            raise RuntimeError("GUSLDataset: no patches extracted. Check paths and patch size.")
+
+        imgs_np = np.concatenate(all_img_frames, axis=0).astype(np.float32)
+        msks_np = np.concatenate(all_msk_frames, axis=0).astype(np.float32)
+
+        return cls(imgs_np, msks_np, all_names)
+
+    # ------------------------------------------------------------------
+    # Train / val split (at patch boundary, not frame boundary)
+    # ------------------------------------------------------------------
+
+    def split(
+        self,
+        patch_depth: int,
+        val_ratio: float = 0.2,
+        seed: int = 42,
+    ) -> Tuple["GUSLDataset", "GUSLDataset"]:
+        """
+        Split into train and val at the patch level (groups of patch_depth frames).
+
+        Args
+        ----
+        patch_depth : depth (D) of each patch — used to keep patch frames together.
+        val_ratio   : fraction of patches for validation.
+        seed        : RNG seed.
+        """
+        N = self.imgs.shape[0]
+        if N % patch_depth != 0:
+            logger.warning(
+                f"[GUSLDataset] N={N} not divisible by patch_depth={patch_depth}. "
+                "Last partial patch will be included in train."
+            )
+        n_patches = N // patch_depth
+        rng = np.random.default_rng(seed)
+        idx = np.arange(n_patches)
+        rng.shuffle(idx)
+
+        n_val   = max(1, int(round(val_ratio * n_patches)))
+        val_idx = idx[:n_val]
+        tr_idx  = idx[n_val:]
+
+        def _gather(patch_indices):
+            frame_idx = np.concatenate([
+                np.arange(i * patch_depth, (i + 1) * patch_depth) for i in patch_indices
+            ])
+            return (
+                self.imgs[frame_idx],
+                self.msks[frame_idx],
+                [self.names[j] for j in frame_idx],
+            )
+
+        tr_imgs, tr_msks, tr_names = _gather(tr_idx)
+        vl_imgs, vl_msks, vl_names = _gather(val_idx)
+
+        return GUSLDataset(tr_imgs, tr_msks, tr_names), GUSLDataset(vl_imgs, vl_msks, vl_names)
+
+
 def build_train_dataset_from_config(
     full_config: dict, 
     train_transform: Optional[Callable] = None, 

@@ -64,6 +64,15 @@ def write_results(rows: List[Dict[str, object]], summary_rows: List[Dict[str, ob
             for r in rows: w.writerow({k: r.get(k) for k in SUMMARY_HEADERS})
         logger.info(f"Detailed results saved to {csv_path}")
 
+def _build_slice_index(pred_dir: Path) -> dict:
+    """Map trailing numeric suffix -> pred file path for fallback matching."""
+    index = {}
+    for p in list_files(pred_dir):
+        m = re.search(r"(\d+)$", p.stem)
+        if m:
+            index[m.group(1)] = p
+    return index
+
 def evaluate_triplet(gt_dir: Path, pred_dir: Path, metric_cfg: dict = None) -> Dict[str, float]:
     metric_cfg = metric_cfg or {}
     # Extract params from config
@@ -74,9 +83,10 @@ def evaluate_triplet(gt_dir: Path, pred_dir: Path, metric_cfg: dict = None) -> D
     conn = obj_p.get("connectivity", None)
 
     gt_files = list_files(gt_dir)
+    pred_index = _build_slice_index(pred_dir)
     tp = fp = fn = tn = 0
     file_count = 0
-    
+
     # Trackers for slice-wise complex metrics
     mcc_list = []
     hd_list = []
@@ -85,13 +95,17 @@ def evaluate_triplet(gt_dir: Path, pred_dir: Path, metric_cfg: dict = None) -> D
     prauc_list = []
     gt_count_total = 0
     pr_count_total = 0
-    
+
     for gtf in gt_files:
         prf = pred_dir / gtf.name
         if not prf.exists():
             alt = gtf.stem + (".tiff" if gtf.suffix == ".tif" else ".tif")
             prf = pred_dir / alt
-        if not prf.exists(): continue
+        if not prf.exists():
+            m = re.search(r"(\d+)$", gtf.stem)
+            if m:
+                prf = pred_index.get(m.group(1))
+        if not prf or not prf.exists(): continue
         try:
             g_arr_raw = tifffile.imread(str(gtf))
             p_arr_raw = tifffile.imread(str(prf))
@@ -157,8 +171,8 @@ def main():
 
     # 1. Find potential GT folders (ending in _mask and NOT .scroll-tif)
     gt_folders = [
-        p for p in root.rglob("*_mask") 
-        if p.is_dir() and not p.name.endswith(".scroll-tif")
+        p for p in root.rglob("*_mask")
+        if p.is_dir() and not p.name.endswith((".scroll-tif", ".scroll-tiff"))
     ]
     
     logger.info(f"Found {len(gt_folders)} GT volumes to analyze.")
@@ -179,8 +193,8 @@ def main():
         # 2. Find prediction folders in the same parent
         # They should contain the model name and end with .scroll-tif
         pred_folders = [
-            p for p in parent.iterdir() 
-            if p.is_dir() and p.name.strip().endswith(".scroll-tif")
+            p for p in parent.iterdir()
+            if p.is_dir() and p.name.strip().endswith((".scroll-tif", ".scroll-tiff"))
         ]
         
         for p_dir in pred_folders:

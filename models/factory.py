@@ -58,5 +58,9 @@ def build_model_from_config(config):
             dropout_prob=model_params.get("dropout_prob", 0.5),
         )
         
+    elif model_type == "gusl":
+        from .GUSL import GUSLModel
+        return GUSLModel(**model_params)
+
     else:
         raise ValueError(f"Unknown model_type: {model_type}")

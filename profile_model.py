@@ -305,8 +305,13 @@ def profile_one(model_type, args, device):
         total_flops = sum(v["flops"]  for v in mod_stats.values())
         total_time  = sum(v["time_s"] for v in mod_stats.values())
 
+        n_voxels = args.batch_size
+        for s in spatial:
+            n_voxels *= s
         print(f"  Total FLOPs : {_fmt_flops(total_flops)}"
               + (f"  ({_fmt_flops(total_flops / args.batch_size)} / sample)" if args.batch_size > 1 else ""))
+        print(f"  FLOPs/pixel : {_fmt_flops(total_flops / n_voxels)}"
+              f"   (batch={args.batch_size}, volume={'×'.join(str(s) for s in spatial)})")
 
         # Sort by time descending
         rows = sorted(mod_stats.items(), key=lambda kv: -kv[1]["time_s"])
@@ -374,10 +379,10 @@ def parse_args():
     p.add_argument("--model", type=str, default="all",
                    choices=["all", "unet", "attention_unet", "swin_unetr", "vnet"])
     p.add_argument("--spatial_dims", type=int, default=3, choices=[2, 3])
-    p.add_argument("--patch",        type=int, nargs="+", default=[16, 64, 64])
+    p.add_argument("--patch",        type=int, nargs="+", default=[32, 64, 64])
     p.add_argument("--in_channels",  type=int, default=1)
     p.add_argument("--out_channels", type=int, default=1)
-    p.add_argument("--batch_size",   type=int, default=2)
+    p.add_argument("--batch_size",   type=int, default=128)
     p.add_argument("--n_warmup",     type=int, default=3)
     p.add_argument("--n_runs",       type=int, default=10)
     p.add_argument("--device",       type=str, default="cuda" if torch.cuda.is_available() else "cpu")

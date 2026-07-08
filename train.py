@@ -54,7 +54,6 @@ train_transform = Compose([
 
 val_transform = Compose([
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
-    # GaussianSmoothd(keys=["mask"], sigma=0.1),
     AsDiscreted(keys=["mask"], threshold=0.5),
 ])
 
