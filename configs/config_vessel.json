@@ -78,7 +78,7 @@
       "grad_size": [3, 3, 5],
       "grad_depth": [3, 3, 3],
       "n_bins": 32,
-      "n_selected": 500,
+      "n_selected": 300,
       "lnt_depth": 3,
       "lnt_num_tree": 150,
       "_comment_sampling": "Voxel samples per level: positives and negatives within boundary_window of the mask are always eligible, other negatives with prob neg_keep_frac; caps bound RAM. decode_samples x ~600 features x 4 B = host RAM for XGBoost.",
