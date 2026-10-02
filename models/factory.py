@@ -59,8 +59,8 @@ def build_model_from_config(config):
         )
         
     elif model_type == "gusl":
-        from .GUSL import GUSLModel
-        return GUSLModel(**model_params)
+        from .GUSL import GUSL
+        return GUSL(**{k: v for k, v in model_params.items() if not k.startswith("_")})
 
     else:
         raise ValueError(f"Unknown model_type: {model_type}")

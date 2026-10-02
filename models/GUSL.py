@@ -1,664 +1,339 @@
 """
-GUSLModel — coarse-to-fine 3D segmentation using Saab + RFT + LNT + XGBoost.
-Drop-in model class for the Chulab-Signal_Segmentation pipeline.
-"""
-import gc
-import logging
-import os
-from typing import Dict, List, Optional, Union
+GUSL — coarse-to-fine voxel regressor (Saab + RFT + LNT + XGBoost) as a drop-in model.
 
-import cv2
-import joblib
+Same contract as the DL models: forward((B,1,D,H,W) or (B,1,H,W)) -> logits of the same shape,
+so inference.py, the stitcher and the metrics work unchanged. Training is closed-form + boosting,
+so train.py calls model.fit(train_ds, val_ds, full_config, device) instead of the epoch loop.
+
+Levels run deepest -> 1; level L works at XY scale 1/2^(L-1) (level 1 = full resolution).
+The deepest level regresses the mask; each finer level regresses the residual
+(mask - upsampled coarser prediction) from features of the image and of (image - coarser prediction).
+Everything is computed per patch on the GPU, identically in training and inference.
+"""
+import logging
+import time
+
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import xgboost as xgb
 
-from .gusl_utils.featgen import FeatGen3D
-from .gusl_utils.rft import DualRFT, build_feature_masks, build_feature_masks_from_featgens
-from .gusl_utils.lnt import LNT
-from .gusl_utils.sample_selection import (
-    boundary_selection_mask, apply_random_thinning, print_pos_neg_stats,
-)
-from .gusl_utils.xgb_utils import (
-    stream_extract_features, train_xgboost_model, run_full_prediction,
-    save_pred_as_masks, combine_pred_with_prev_and_save,
-    build_level_targets, build_residual_input_from_previous, concat_img_res_features,
-)
+from .gusl_utils.rft import DualRFT
+from .gusl_utils.lnt import fit_lnt
+
+try:
+    import cupy  # optional: zero-copy GPU input for XGBoost predict
+except ImportError:
+    cupy = None
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_per_level(values, deepest_level: int, name: str, cast_fn=None) -> List:
-    if not isinstance(values, (list, tuple)):
-        values = [values]
-    if cast_fn is not None:
-        values = [cast_fn(v) for v in values]
-    if len(values) == 1:
-        return list(values) * deepest_level
-    if len(values) != deepest_level:
-        raise ValueError(
-            f"{name} must have length 1 or deepest_level={deepest_level}, got {len(values)}: {values}"
-        )
-    return list(values)
+def _per_level(v, n, name):
+    v = list(v) if isinstance(v, (list, tuple)) else [v]
+    if len(v) == 1:
+        return v * n
+    if len(v) != n:
+        raise ValueError(f"{name}: need 1 or {n} values (deepest -> level 1), got {v}")
+    return v
 
 
-def _feature_batches_ready(feature_dir: str, num_images: int, batch_size: int) -> bool:
-    import math
-    n_batches = math.ceil(num_images / batch_size)
-    for i in range(n_batches):
-        if not os.path.isfile(os.path.join(feature_dir, f"batch_features_{i:04d}.npz")):
-            return False
-    return True
+def _down(x, s):
+    return F.avg_pool3d(x, (1, s, s)) if s > 1 else x
 
 
-class GUSLModel:
-    """
-    Coarse-to-fine Saab/XGBoost segmentation model.
+def _window(x, kd, k):
+    """(B,C,D,H,W) -> (B,C*kd*k*k,D,H,W): each voxel's kd×k×k neighbourhood (replicate-padded)."""
+    C, P = x.shape[1], kd * k * k
+    w = torch.eye(P, device=x.device, dtype=x.dtype).view(P, 1, kd, k, k).repeat(C, 1, 1, 1, 1)
+    x = F.pad(x, (k // 2,) * 4 + (kd // 2,) * 2, mode="replicate")
+    return F.conv3d(x, w, groups=C)
 
-    Training flow (per level, deepest → finest):
-      1. FeatGen3D (Saab + neighborhood + gradient features)
-      2. DualRFT  (histogram-based feature selection)
-      3. LNT      (learnable node transform via shallow XGBoost leaf subsets)
-      4. XGBoost  (final pixel-wise regressor)
 
-    Residual stream: for levels < deepest_level, a second FeatGen3D is trained
-    on (image − previous-level-prediction) and its features are concatenated.
+def _grad_maps(x):
+    """Per-frame max and mean of |x - neighbour| over the 8 XY neighbours -> (B,2,D,H,W)."""
+    H, W = x.shape[-2:]
+    p = F.pad(x, (1, 1, 1, 1, 0, 0), mode="replicate")
+    d = torch.stack([(p[..., 1 + dy:1 + dy + H, 1 + dx:1 + dx + W] - x).abs()
+                     for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx])
+    return torch.cat([d.amax(0), d.mean(0)], 1)
 
-    Args
-    ----
-    deepest_level : int
-        Number of pyramid levels. Level deepest_level is coarsest, level 1 is finest.
-    base_size : int
-        Spatial resolution at level 1. Level k uses base_size / 2^(k-1).
-    kernel_size, kernel_depth : int or list[int]
-        Saab patch dimensions (per level, deepest → shallowest, or single value).
-    neigh_size, neigh_depth, neigh_stride : int or list[int]
-        Neighborhood sampling params.
-    use_grad, grad_size, grad_depth : bool/int or list
-        Gradient feature params.
-    batch_centers : int
-        Max voxels per FeatGen3D batch (controls GPU/CPU peak memory).
-    n_bins, n_selected : int or list[int]
-        RFT histogram bins and selected feature count.
-    lnt_depth, lnt_num_tree : int or list[int]
-        LNT XGBoost params.
-    n_estimators, max_depth, learning_rate, early_stopping_rounds : int/float
-        Final XGBoost regressor params.
-    keep_frac, low1, low2, high1, high2 : float
-        Boundary-aware sample selection params.
-    encode_percentage, decode_percentage : float or list[float]
-        Per-level pixel keep fractions for encoder / XGBoost training stages.
-    val_encode_percentage, val_decode_percentage : float or list[float]
-        Same for validation.
-    patch_depth : int
-        Depth (Z frames) of each training patch (= training_patch_size[0]).
-    batch_size : int
-        Number of whole patches per feature-stream batch. Frame stride = batch_size × patch_depth.
-    device : str
-        "cuda" or "cpu".
-    gpu_id : int
-        CUDA device index.
-    """
+
+def _xgb_predict(booster, X):
+    if cupy is not None and X.is_cuda:
+        booster.set_param({"device": f"cuda:{X.device.index if X.device.index is not None else torch.cuda.current_device()}"})
+        return torch.as_tensor(booster.inplace_predict(cupy.asarray(X)), device=X.device)
+    # ponytail: without cupy, features round-trip through host RAM; `pip install cupy-cuda12x` keeps them on GPU
+    booster.set_param({"device": "cpu"})
+    return torch.from_numpy(booster.inplace_predict(X.cpu().numpy())).to(X.device)
+
+
+class FeatGen(nn.Module):
+    """Saab responses on a sparse neighbour grid + raw kd×k×k patch + optional gradient window."""
+
+    def __init__(self, kernel_size, kernel_depth, neigh_size, neigh_depth, neigh_stride,
+                 use_grad, grad_size, grad_depth):
+        super().__init__()
+        for name, v in [("kernel_size", kernel_size), ("kernel_depth", kernel_depth), ("neigh_size", neigh_size),
+                        ("neigh_depth", neigh_depth), ("grad_size", grad_size), ("grad_depth", grad_depth)]:
+            if v % 2 == 0:
+                raise ValueError(f"{name} must be odd, got {v}")
+        self.k, self.kd = kernel_size, kernel_depth
+        self.use_grad, self.gs, self.gd = use_grad, grad_size, grad_depth
+        self.r, self.rd = neigh_size // 2, neigh_depth // 2
+        self.offsets = [(dz, dy, dx)
+                        for dz in range(-self.rd, self.rd + 1, neigh_stride)
+                        for dy in range(-self.r, self.r + 1, neigh_stride)
+                        for dx in range(-self.r, self.r + 1, neigh_stride)]
+        self.register_buffer("saab_w", torch.empty(0))
+        self.register_buffer("saab_b", torch.empty(0))
+
+    def patches(self, x):
+        return _window(x, self.kd, self.k)
+
+    @torch.no_grad()
+    def fit(self, P):
+        """Saab PCA on raw patches P (M, kd*k*k): DC kernel + AC principal components."""
+        P = P.double()
+        ac = P - P.mean(1, keepdim=True)
+        mean0 = ac.mean(0, keepdim=True)
+        X0 = ac - mean0
+        _, eve = torch.linalg.eigh(X0.T @ X0)
+        n = P.shape[1]
+        dc = torch.full((1, n), n ** -0.5, dtype=P.dtype, device=P.device)
+        K = torch.cat([dc, eve.T.flip(0)[:-1]])          # descending energy, drop the null (DC) direction
+        self.saab_w = K.float().view(n, 1, self.kd, self.k, self.k)
+        self.saab_b = -(K @ mean0.T).squeeze(1).float()  # transform = (x - mean0) @ K^T
+
+    def forward(self, x):
+        D, H, W = x.shape[-3:]
+        r, rd = self.r, self.rd
+        s = F.conv3d(F.pad(x, (self.k // 2,) * 4 + (self.kd // 2,) * 2, mode="replicate"), self.saab_w, self.saab_b)
+        s = F.pad(s, (r, r, r, r, rd, rd), mode="replicate")
+        feats = [s[:, :, rd + dz:rd + dz + D, r + dy:r + dy + H, r + dx:r + dx + W] for dz, dy, dx in self.offsets]
+        feats.append(self.patches(x))
+        if self.use_grad:
+            feats.append(_window(_grad_maps(x), self.gd, self.gs))
+        return torch.cat(feats, 1)
+
+
+class Regressor(nn.Module):
+    """RFT column pick -> append LNT projections -> XGBoost. (B,F,D,H,W) -> (B,1,D,H,W)."""
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("rft_idx", torch.empty(0, dtype=torch.long))
+        self.register_buffer("lnt_w", torch.empty(0))  # (m, F', 1, 1, 1)
+        self.booster = None
+
+    def project(self, f):
+        f = f.index_select(1, self.rft_idx)
+        return torch.cat([f, F.conv3d(f, self.lnt_w)], 1)
+
+    def forward(self, f):
+        if self.booster is None:
+            raise RuntimeError("GUSL level not trained. Call fit() first.")
+        f = self.project(f)
+        B, C, D, H, W = f.shape
+        y = _xgb_predict(self.booster, f.movedim(1, -1).reshape(-1, C).contiguous())
+        return y.view(B, D, H, W).unsqueeze(1)
+
+
+class GUSLLevel(nn.Module):
+    def __init__(self, scale, residual, **fg_kwargs):
+        super().__init__()
+        self.scale = scale
+        self.fg_img = FeatGen(**fg_kwargs)
+        self.fg_res = FeatGen(**{**fg_kwargs, "use_grad": False}) if residual else None
+        self.head = Regressor()
+
+    def inputs(self, x, prev):
+        """Full-res x + coarser prediction -> (x at this level's res, prediction upsampled to it)."""
+        xl = _down(x, self.scale)
+        if prev is None:
+            return xl, None
+        return xl, F.interpolate(prev, size=xl.shape[-3:], mode="trilinear", align_corners=False)
+
+    def features(self, xl, prev_up):
+        f = self.fg_img(xl)
+        return f if prev_up is None else torch.cat([f, self.fg_res(xl - prev_up)], 1)
+
+    def forward(self, x, prev):
+        xl, prev_up = self.inputs(x, prev)
+        r = self.head(self.features(xl, prev_up))
+        return (r if prev_up is None else prev_up + r).clamp(0, 1)
+
+
+class _Patches:
+    """Iterates a Train dataset's shared patch tensor in batches, with the cached coarser prediction."""
+
+    def __init__(self, ds, batch_size, device):
+        self.imgs, self.msks = ds.image_tensors[0], ds.mask_tensors[0]
+        self.idx = torch.tensor([m.volume_idx for m in ds.patch_indices])
+        self.bs, self.device = batch_size, device
+        self.prev = None  # (N,1,D,h,w) float16, prediction of the last trained level
+
+    def __iter__(self):
+        for i in range(0, len(self.idx), self.bs):
+            j = self.idx[i:i + self.bs]
+            x = self.imgs[j].to(self.device)
+            m = (self.msks[j] > 0.5).float().to(self.device)
+            p = None if self.prev is None else self.prev[i:i + self.bs].to(self.device).float()
+            yield x, m, p
+
+
+class GUSL(nn.Module):
+    pad_div32 = False  # read by train.py / inference.py: keep patches at native size (no SwinUNETR padding)
 
     def __init__(
         self,
-        deepest_level: int = 4,
-        base_size: int = 1280,
-        patch_depth: int = 16,
-        # encoder per-level params (deepest → shallowest, or scalar)
-        kernel_size: Union[int, List[int]] = [3, 3, 5, 5],
-        kernel_depth: Union[int, List[int]] = [3, 3, 3, 3],
-        neigh_size: Union[int, List[int]] = [3, 5, 5, 7],
-        neigh_depth: Union[int, List[int]] = [1, 1, 1, 1],
-        neigh_stride: Union[int, List[int]] = [2, 2, 2, 2],
-        use_grad: Union[bool, List[bool]] = [True, True, True, True],
-        grad_size: Union[int, List[int]] = [3, 5, 5, 5],
-        grad_depth: Union[int, List[int]] = [3, 3, 3, 3],
-        batch_centers: int = 100_000,
-        # RFT per-level params
-        n_bins: Union[int, List[int]] = [32, 32, 32, 32],
-        n_selected: Union[int, List[int]] = [400, 500, 600, 600],
-        rft_sample_frac: Optional[float] = 0.5,
-        lnt_sample_frac: Optional[float] = 0.5,
-        # LNT per-level params
-        lnt_depth: Union[int, List[int]] = [3, 3, 4, 4],
-        lnt_num_tree: Union[int, List[int]] = [150, 150, 200, 200],
-        # Final XGBoost params
-        n_estimators: int = 5000,
-        max_depth: int = 4,
-        learning_rate: float = 0.15,
-        early_stopping_rounds: int = 5,
-        # Sample selection
-        keep_frac: float = 0.3,
-        low1: float = 0.0,
-        low2: float = 0.05,
-        high1: float = 0.1,
-        high2: float = 0.4,
-        encode_percentage: Union[float, List[float]] = [1.0, 1.0, 0.4, 0.1],
-        decode_percentage: Union[float, List[float]] = [1.0, 1.0, 0.7, 0.3],
-        val_encode_percentage: Union[float, List[float]] = [1.0, 1.0, 1.0, 1.0],
-        val_decode_percentage: Union[float, List[float]] = [1.0, 1.0, 1.0, 1.0],
-        # I/O
-        batch_size: int = 2,
-        device: str = "cuda",
-        gpu_id: int = 0,
+        levels=2,
+        # per-level (deepest -> level 1, or one value for all)
+        kernel_size=3, kernel_depth=3,
+        neigh_size=3, neigh_depth=1, neigh_stride=2,
+        use_grad=True, grad_size=3, grad_depth=3,
+        n_bins=32, n_selected=500,
+        lnt_depth=3, lnt_num_tree=150,
+        boundary_window=5,
+        # final XGBoost
+        n_estimators=3000, max_depth=4, learning_rate=0.1, early_stopping_rounds=30, max_bin=256,
+        # sampling (voxel counts per level)
+        neg_keep_frac=0.15,
+        saab_samples=200_000, encode_samples=2_000_000, decode_samples=8_000_000, val_samples=1_000_000,
+        seed=42,
+        spatial_dims=3,  # injected by train.py; 2 forces every depth extent to 1
     ):
-        self.deepest_level = deepest_level
-        self.base_size = base_size
-        self.patch_depth = patch_depth
+        super().__init__()
+        n = levels
+        pl = lambda v, name: _per_level(v, n, name)
+        if spatial_dims == 2:
+            kernel_depth = neigh_depth = grad_depth = 1
+        self.n_bins, self.n_selected = pl(n_bins, "n_bins"), pl(n_selected, "n_selected")
+        self.lnt_depth, self.lnt_num_tree = pl(lnt_depth, "lnt_depth"), pl(lnt_num_tree, "lnt_num_tree")
+        self.boundary_window = pl(boundary_window, "boundary_window")
+        self.xgb_params = {"objective": "reg:squarederror", "eval_metric": "rmse", "tree_method": "hist",
+                           "max_depth": max_depth, "eta": learning_rate, "max_bin": max_bin}
+        self.n_estimators, self.early_stopping_rounds = n_estimators, early_stopping_rounds
+        self.neg_keep_frac, self.seed = neg_keep_frac, seed
+        self.saab_samples, self.encode_samples = saab_samples, encode_samples
+        self.decode_samples, self.val_samples = decode_samples, val_samples
 
-        # Resolve per-level lists
-        self.kernel_sizes   = _resolve_per_level(kernel_size,   deepest_level, "kernel_size",   int)
-        self.kernel_depths  = _resolve_per_level(kernel_depth,  deepest_level, "kernel_depth",  int)
-        self.neigh_sizes    = _resolve_per_level(neigh_size,    deepest_level, "neigh_size",    int)
-        self.neigh_depths   = _resolve_per_level(neigh_depth,   deepest_level, "neigh_depth",   int)
-        self.neigh_strides  = _resolve_per_level(neigh_stride,  deepest_level, "neigh_stride",  int)
-        self.use_grads      = _resolve_per_level(use_grad,      deepest_level, "use_grad",      bool)
-        self.grad_sizes     = _resolve_per_level(grad_size,     deepest_level, "grad_size",     int)
-        self.grad_depths    = _resolve_per_level(grad_depth,    deepest_level, "grad_depth",    int)
-        self.n_bins_list    = _resolve_per_level(n_bins,        deepest_level, "n_bins",        int)
-        self.n_selected_list = _resolve_per_level(n_selected,  deepest_level, "n_selected",    int)
-        self.lnt_depth_list  = _resolve_per_level(lnt_depth,   deepest_level, "lnt_depth",     int)
-        self.lnt_num_tree_list = _resolve_per_level(lnt_num_tree, deepest_level, "lnt_num_tree", int)
-        self.encode_pcts    = _resolve_per_level(encode_percentage,     deepest_level, "encode_percentage",     float)
-        self.decode_pcts    = _resolve_per_level(decode_percentage,     deepest_level, "decode_percentage",     float)
-        self.val_encode_pcts = _resolve_per_level(val_encode_percentage, deepest_level, "val_encode_percentage", float)
-        self.val_decode_pcts = _resolve_per_level(val_decode_percentage, deepest_level, "val_decode_percentage", float)
+        fg = {k: pl(v, k) for k, v in dict(
+            kernel_size=kernel_size, kernel_depth=kernel_depth, neigh_size=neigh_size, neigh_depth=neigh_depth,
+            neigh_stride=neigh_stride, use_grad=use_grad, grad_size=grad_size, grad_depth=grad_depth).items()}
+        self.levels = nn.ModuleList([
+            GUSLLevel(scale=2 ** (n - 1 - i), residual=i > 0, **{k: v[i] for k, v in fg.items()})
+            for i in range(n)
+        ])
 
-        self.rft_sample_frac = rft_sample_frac
-        self.lnt_sample_frac = lnt_sample_frac
-        self.batch_centers = batch_centers
-        self.n_estimators = n_estimators
-        self.max_depth = max_depth
-        self.learning_rate = learning_rate
-        self.early_stopping_rounds = early_stopping_rounds
-        self.keep_frac = keep_frac
-        self.low1 = low1
-        self.low2 = low2
-        self.high1 = high1
-        self.high2 = high2
-        self.batch_size = batch_size
-        self.device = device
-        self.gpu_id = gpu_id
+    def forward(self, x):
+        is2d = x.ndim == 4
+        if is2d:
+            x = x.unsqueeze(2)
+        pred = None
+        for lvl in self.levels:
+            pred = lvl(x, pred)
+        p = pred.clamp(1e-4, 1 - 1e-4)
+        logits = torch.log(p) - torch.log1p(-p)  # stitcher thresholds logits at 0 (= p 0.5)
+        return logits.squeeze(2) if is2d else logits
 
-        # Per-level model state (index 0 = deepest level, index deepest_level-1 = level 1)
-        self.featgen_img:  List[Optional[FeatGen3D]] = [None] * deepest_level
-        self.featgen_res:  List[Optional[FeatGen3D]] = [None] * deepest_level
-        self.rft_models:   List[Optional[DualRFT]]   = [None] * deepest_level
-        self.lnt_models:   List[Optional[LNT]]       = [None] * deepest_level
-        self.xgb_models:   List                       = [None] * deepest_level
+    # ------------------------------------------------------------------ training
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def _weights(self, ml, li):
+        """Sampling weight per voxel: positives and negatives near the mask = 1, other negatives = neg_keep_frac."""
+        pos = ml > 0.5
+        k = self.boundary_window[li]
+        # ponytail: "near" = >=10% positives in a k×k window, same cut as the original boundary selection
+        near = F.avg_pool3d(pos.float(), (1, k, k), stride=1, padding=(0, k // 2, k // 2), count_include_pad=False) >= 0.1
+        return torch.where(pos | near, 1.0, self.neg_keep_frac)
 
-    def fit(
-        self,
-        train_imgs: np.ndarray,
-        train_msks: np.ndarray,
-        val_imgs: np.ndarray,
-        val_msks: np.ndarray,
-        saveroot: str,
-        train_names: Optional[List[str]] = None,
-        val_names: Optional[List[str]] = None,
-        run_level: Optional[int] = None,
-    ) -> "GUSLModel":
-        """
-        Train the full coarse-to-fine pyramid.
+    def _level_inputs(self, src, li):
+        lvl = self.levels[li]
+        for x, m, prev in src:
+            xl, prev_up = lvl.inputs(x, prev)
+            ml = _down(m, lvl.scale)
+            yield xl, prev_up, (ml if prev_up is None else ml - prev_up), self._weights(ml, li)
 
-        Args
-        ----
-        train_imgs, train_msks : (N, H, W) float32 numpy arrays (already normalised).
-        val_imgs, val_msks     : (M, H, W) float32 numpy arrays.
-        saveroot               : Root directory for intermediate features, level outputs, and models.
-        train_names, val_names : Base filenames for intermediate PNG masks (default: frame_XXXX).
-        run_level              : If set, train only this single level.
-        """
-        if self.device.startswith("cuda"):
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.gpu_id)
+    def _collect(self, src, li, cap, seed, fn):
+        """Weighted random sample of ~cap voxels -> (fn(xl, prev_up) rows, targets) as numpy."""
+        total = sum(float(w.sum()) for *_, w in self._level_inputs(src, li))
+        rate = min(1.0, cap / max(total, 1.0))
+        g = None
+        Xs, ys = [], []
+        for xl, prev_up, target, w in self._level_inputs(src, li):
+            if g is None:
+                g = torch.Generator(device=w.device).manual_seed(seed)
+            keep = (torch.rand(w.shape, generator=g, device=w.device) < w * rate)[:, 0]
+            Xs.append(fn(xl, prev_up).movedim(1, -1)[keep].cpu())
+            ys.append(target[:, 0][keep].cpu())
+        # ponytail: chunks + cat = 2x peak host RAM of the sample; preallocate if decode_samples grows huge
+        return torch.cat(Xs).numpy(), torch.cat(ys).numpy()
 
-        N_tr = train_imgs.shape[0]
-        N_val = val_imgs.shape[0]
-        train_names = train_names or [f"frame_{i:04d}" for i in range(N_tr)]
-        val_names   = val_names   or [f"frame_{i:04d}" for i in range(N_val)]
+    @torch.no_grad()
+    def _cache_prediction(self, src, li):
+        lvl = self.levels[li]
+        src.prev = torch.cat([lvl(x, prev).half().cpu() for x, _, prev in src])
 
-        model_dir = os.path.join(saveroot, "models", f"Deepest_level_{self.deepest_level}")
-        os.makedirs(model_dir, exist_ok=True)
+    @torch.no_grad()
+    def fit(self, train_ds, val_ds, full_config, device):
+        device = torch.device(device)
+        self.to(device)
+        bs = full_config.get("train", {}).get("training_batch_size", 16)
+        tr, va = _Patches(train_ds, bs, device), _Patches(val_ds, bs, device)
+        xgb_device = f"cuda:{device.index or 0}" if device.type == "cuda" else "cpu"
+        logger.info(f"[GUSL] {len(tr.idx)} train / {len(va.idx)} val patches, batch={bs}, device={device}")
 
-        for level in range(self.deepest_level, 0, -1):
-            if run_level is not None and level != run_level:
-                logger.info(f"[Skip] Skipping level {level}")
-                continue
+        for li, lvl in enumerate(self.levels):
+            level = len(self.levels) - li
+            seed = self.seed + 100 * li
+            t0 = time.perf_counter()
+            logger.info(f"[GUSL] ===== level {level} (XY scale 1/{lvl.scale}) =====")
 
-            self._fit_level(
-                level=level,
-                train_imgs=train_imgs, train_msks=train_msks,
-                val_imgs=val_imgs, val_msks=val_msks,
-                saveroot=saveroot, model_dir=model_dir,
-                train_names=train_names, val_names=val_names,
-            )
+            # 1. Saab kernels (image stream, + residual stream on finer levels)
+            def raw(xl, prev_up):
+                p = lvl.fg_img.patches(xl)
+                return p if prev_up is None else torch.cat([p, lvl.fg_res.patches(xl - prev_up)], 1)
+            P, _ = self._collect(tr, li, self.saab_samples, seed, raw)
+            n = lvl.fg_img.kd * lvl.fg_img.k ** 2
+            lvl.fg_img.fit(torch.from_numpy(P[:, :n]).to(device))
+            if lvl.fg_res is not None:
+                lvl.fg_res.fit(torch.from_numpy(P[:, n:]).to(device))
+            del P
+            logger.info(f"[GUSL] Saab fit ({time.perf_counter() - t0:.0f}s)")
 
+            # 2. RFT feature selection + LNT projections on the encode sample
+            X, y = self._collect(tr, li, self.encode_samples, seed + 1, lvl.features)
+            Xv, yv = self._collect(va, li, self.val_samples, seed + 2, lvl.features)
+            rft = DualRFT(n_bins=self.n_bins[li], n_selected=min(self.n_selected[li], X.shape[1]))
+            rft.fit(X, y, Xv, yv)
+            idx = rft.selected_features
+            W = fit_lnt(X[:, idx], y, depth=self.lnt_depth[li], num_tree=self.lnt_num_tree[li], device=xgb_device)
+            lvl.head.rft_idx = torch.from_numpy(idx).long().to(device)
+            lvl.head.lnt_w = torch.from_numpy(W.T.copy()).float().view(W.shape[1], W.shape[0], 1, 1, 1).to(device)
+            logger.info(f"[GUSL] features {X.shape[1]} -> RFT {len(idx)} + LNT {W.shape[1]}, "
+                        f"encode {len(X)}/{len(Xv)} ({time.perf_counter() - t0:.0f}s)")
+            del X, y, Xv, yv
+
+            # 3. XGBoost on the decode sample
+            project = lambda xl, prev_up: lvl.head.project(lvl.features(xl, prev_up))
+            X, y = self._collect(tr, li, self.decode_samples, seed + 3, project)
+            Xv, yv = self._collect(va, li, self.val_samples, seed + 4, project)
+            logger.info(f"[GUSL] XGBoost decode {X.shape} train / {Xv.shape} val ({X.nbytes / 1e9:.1f} GB)")
+            dtr = xgb.QuantileDMatrix(X, y, max_bin=self.xgb_params["max_bin"])
+            dva = xgb.QuantileDMatrix(Xv, yv, ref=dtr)
+            del X, y, Xv, yv
+            booster = xgb.train({**self.xgb_params, "device": xgb_device}, dtr,
+                                num_boost_round=self.n_estimators, evals=[(dva, "val")],
+                                early_stopping_rounds=self.early_stopping_rounds, verbose_eval=100)
+            lvl.head.booster = booster[: booster.best_iteration + 1]
+            del dtr, dva
+            logger.info(f"[GUSL] XGBoost best_iter={booster.best_iteration} val_rmse={booster.best_score:.4f} "
+                        f"({time.perf_counter() - t0:.0f}s)")
+
+            # 4. Dense prediction of this level, input to the next one
+            if li < len(self.levels) - 1:
+                self._cache_prediction(tr, li)
+                self._cache_prediction(va, li)
+            logger.info(f"[GUSL] level {level} done ({time.perf_counter() - t0:.0f}s)")
         return self
-
-    def predict(
-        self,
-        imgs: np.ndarray,
-        pixel_batch_size: int = 500_000,
-    ) -> np.ndarray:
-        """
-        Run coarse-to-fine inference on a full Z-chunk (N, H, W).
-
-        Features are extracted once per level over the full spatial extent,
-        then streamed through RFT → LNT → XGBoost in pixel_batch_size batches.
-        No XY tiling — setup overhead paid once per level instead of once per tile.
-
-        Level scale: level 1 = native resolution; level L = 1/(2^(L-1)) resolution.
-        """
-        imgs = np.asarray(imgs, dtype=np.float32)
-        N, H_orig, W_orig = imgs.shape
-
-        level_preds: Dict[int, np.ndarray] = {}
-
-        for level in range(self.deepest_level, 0, -1):
-            lvl_idx   = self.deepest_level - level
-            fg        = self.featgen_img[lvl_idx]
-            fg_r      = self.featgen_res[lvl_idx]
-            rft       = self.rft_models[lvl_idx]
-            lnt       = self.lnt_models[lvl_idx]
-            xgb_model = self.xgb_models[lvl_idx]
-
-            if any(m is None for m in [fg, rft, lnt, xgb_model]):
-                raise RuntimeError(f"Level {level} not trained. Call fit() first.")
-
-            # Coarser levels process at lower spatial resolution (same scale ratio as training)
-            scale = 2 ** (level - 1)   # level 1: ×1, level 2: ×½, …
-            Hl = max(1, H_orig // scale)
-            Wl = max(1, W_orig // scale)
-
-            if scale == 1:
-                imgs_l = imgs
-            else:
-                imgs_l = np.stack([
-                    cv2.resize(img, (Wl, Hl), interpolation=cv2.INTER_LANCZOS4)
-                    for img in imgs
-                ])
-
-            if level < self.deepest_level:
-                prev     = level_preds[level + 1]
-                prev_up  = np.stack([
-                    cv2.resize(p, (Wl, Hl), interpolation=cv2.INTER_LANCZOS4)
-                    for p in prev
-                ])
-                res_imgs = (imgs_l - prev_up).astype(np.float32)
-            else:
-                res_imgs = None
-                prev_up  = None
-
-            n_pixels  = N * Hl * Wl
-            n_batches = (n_pixels + pixel_batch_size - 1) // pixel_batch_size
-            logger.info(f"[predict] level={level} shape=({N},{Hl},{Wl}) pixels={n_pixels} batches={n_batches}")
-
-            # Setup FeatGen3D ONCE for this level — amortises pad/grad/view over all batches
-            ctx_img = fg.prepare(imgs_l)
-            ctx_res = fg_r.prepare(res_imgs) if res_imgs is not None else None
-
-            y_pred_all = np.empty(n_pixels, dtype=np.float32)
-
-            import time as _t
-            for batch_idx, start in enumerate(range(0, n_pixels, pixel_batch_size), 1):
-                end      = min(n_pixels, start + pixel_batch_size)
-                keep_lin = np.arange(start, end, dtype=np.int64)
-
-                t0 = _t.perf_counter()
-                if level == self.deepest_level:
-                    X = fg.transform_precomputed(ctx_img, keep_lin)
-                else:
-                    X_img = fg.transform_precomputed(ctx_img, keep_lin)
-                    X_res = fg_r.transform_precomputed(ctx_res, keep_lin)
-                    X     = np.concatenate([X_img, X_res], axis=1).astype(np.float32, copy=False)
-                    del X_img, X_res
-                t_feat = _t.perf_counter() - t0
-
-                if self.device.startswith("cuda"):
-                    import torch
-                    # Upload X once, keep tensors on GPU through RFT → LNT → concat.
-                    # Avoids repeated PCIe round-trips and eliminates the large CPU
-                    # allocation + page-fault cost of np.concatenate on 600 MB+ arrays.
-                    t0 = _t.perf_counter()
-                    X_t   = torch.from_numpy(np.ascontiguousarray(X)).to(self.device)
-                    del X
-                    idx_t = torch.from_numpy(rft.selected_features).to(self.device)
-                    X_rft_t = X_t[:, idx_t].contiguous()
-                    del X_t, idx_t
-                    torch.cuda.synchronize()
-                    t_rft = _t.perf_counter() - t0
-
-                    t0 = _t.perf_counter()
-                    lnt_parts = [X_rft_t]
-                    for kernel in lnt.svd:
-                        k_t = torch.from_numpy(np.ascontiguousarray(kernel)).to(self.device)
-                        lnt_parts.append(X_rft_t @ k_t)
-                    X_final_t = torch.cat(lnt_parts, dim=1)
-                    del X_rft_t, lnt_parts
-                    X_final = X_final_t.cpu().numpy().astype(np.float32, copy=False)
-                    del X_final_t
-                    t_lnt = _t.perf_counter() - t0
-                else:
-                    t0 = _t.perf_counter()
-                    X_rft = rft.transform(X)
-                    del X
-                    t_rft = _t.perf_counter() - t0
-
-                    t0 = _t.perf_counter()
-                    X_lnt = lnt.transform(X_rft)
-                    X_final = np.concatenate([X_rft, X_lnt], axis=1).astype(np.float32, copy=False)
-                    del X_rft, X_lnt
-                    t_lnt = _t.perf_counter() - t0
-
-                t0 = _t.perf_counter()
-                dmat = xgb.DMatrix(X_final)
-                y_pred_all[start:end] = xgb_model.get_booster().predict(dmat)
-                del X_final, dmat
-                t_xgb = _t.perf_counter() - t0
-
-                if batch_idx <= 3:
-                    logger.info(f"[predict] level={level} batch {batch_idx}/{n_batches} feat={t_feat:.1f}s rft={t_rft:.1f}s lnt={t_lnt:.1f}s xgb={t_xgb:.1f}s")
-                else:
-                    logger.info(f"[predict] level={level} batch {batch_idx}/{n_batches} ({100*end/n_pixels:.1f}%)")
-
-            del ctx_img, ctx_res
-
-            residual  = y_pred_all.reshape(N, Hl, Wl)
-            pred_map  = residual if level == self.deepest_level else prev_up + residual
-            level_preds[level] = np.clip(pred_map, 0, 255).astype(np.float32)
-
-            del y_pred_all, residual
-            if scale != 1:
-                del imgs_l
-            gc.collect()
-
-        return level_preds[1]
-
-    def set_device(self, device: str) -> None:
-        """Propagate device to all sub-components.
-
-        Call after load() to switch inference device — setting model.device directly
-        does NOT update the Saab or LNT components baked in at training time.
-        """
-        import torch
-        self.device = device
-        torch_device = torch.device(device)
-        lnt_mode = "gpu" if device.startswith("cuda") else "cpu"
-        for fg in self.featgen_img + self.featgen_res:
-            if fg is not None:
-                fg.saab.device = torch_device
-        for lnt in self.lnt_models:
-            if lnt is not None:
-                lnt.mode = lnt_mode
-        # XGBoost GPU inference requires cupy; this workstation does not have it,
-        # so always predict on CPU to avoid the device-mismatch fallback warning.
-        for xgb_m in self.xgb_models:
-            if xgb_m is not None:
-                xgb_m.get_booster().set_param("device", "cpu")
-        logger.info(f"[GUSLModel] device set to {device} (saab + lnt + xgb updated)")
-
-    def save(self, path: str) -> None:
-        joblib.dump(self, path)
-        logger.info(f"[GUSLModel] Saved to {path}")
-
-    @classmethod
-    def load(cls, path: str) -> "GUSLModel":
-        model = joblib.load(path)
-        logger.info(f"[GUSLModel] Loaded from {path}")
-        return model
-
-    # ------------------------------------------------------------------
-    # Internal: per-level training
-    # ------------------------------------------------------------------
-
-    def _fit_level(
-        self,
-        level: int,
-        train_imgs: np.ndarray, train_msks: np.ndarray,
-        val_imgs: np.ndarray,   val_msks: np.ndarray,
-        saveroot: str, model_dir: str,
-        train_names: List[str], val_names: List[str],
-    ):
-        logger.info(f"===== LEVEL {level} =====")
-        lvl_idx = self.deepest_level - level
-        size = self.base_size // (2 ** (level - 1))
-
-        # Per-level hyperparams
-        kernel_size  = self.kernel_sizes[lvl_idx]
-        kernel_depth = self.kernel_depths[lvl_idx]
-        neigh_size   = self.neigh_sizes[lvl_idx]
-        neigh_depth  = self.neigh_depths[lvl_idx]
-        neigh_stride = self.neigh_strides[lvl_idx]
-        use_grad     = self.use_grads[lvl_idx]
-        grad_size    = self.grad_sizes[lvl_idx]
-        grad_depth   = self.grad_depths[lvl_idx]
-        encode_pct   = self.encode_pcts[lvl_idx]
-        decode_pct   = self.decode_pcts[lvl_idx]
-        val_enc_pct  = self.val_encode_pcts[lvl_idx]
-        val_dec_pct  = self.val_decode_pcts[lvl_idx]
-        n_bins       = self.n_bins_list[lvl_idx]
-        n_selected   = self.n_selected_list[lvl_idx]
-        lnt_depth    = self.lnt_depth_list[lvl_idx]
-        lnt_num_tree = self.lnt_num_tree_list[lvl_idx]
-
-        # Resize to level resolution
-        train_imgs_l = np.stack([cv2.resize(img, (size, size), interpolation=cv2.INTER_LANCZOS4) for img in train_imgs])
-        train_msks_l = np.stack([cv2.resize(msk, (size, size), interpolation=cv2.INTER_LANCZOS4) for msk in train_msks])
-        val_imgs_l   = np.stack([cv2.resize(img, (size, size), interpolation=cv2.INTER_LANCZOS4) for img in val_imgs])
-        val_msks_l   = np.stack([cv2.resize(msk, (size, size), interpolation=cv2.INTER_LANCZOS4) for msk in val_msks])
-
-        # --- Sample selection ---
-        sel_win = {4: 3, 3: 5, 2: 11, 1: 21}.get(level, 5)
-        sel_mask1_tr = boundary_selection_mask(
-            imgs=train_imgs_l, msks=train_msks_l,
-            intensity_ranges=((self.high1, self.high2), (self.low1, self.low2)),
-            keep_fracs=(self.keep_frac, self.keep_frac),
-            window=sel_win, img_window=sel_win,
-        ).reshape(-1).astype(bool)
-        print_pos_neg_stats(train_msks_l, sel_mask1_tr, prefix="[Train-Sel]")
-        sel_mask2_tr, _ = apply_random_thinning(sel_mask1_tr, select_perc=encode_pct)
-        print_pos_neg_stats(train_msks_l, sel_mask2_tr, prefix="[Train-Sel2]")
-
-        sel_mask1_val = boundary_selection_mask(
-            imgs=val_imgs_l, msks=val_msks_l,
-            intensity_ranges=((self.high1, self.high2), (self.low1, self.low2)),
-            keep_fracs=(self.keep_frac, self.keep_frac),
-            window=sel_win, img_window=sel_win,
-        ).reshape(-1).astype(bool)
-        sel_mask2_val, _ = apply_random_thinning(sel_mask1_val, select_perc=val_enc_pct)
-
-        # --- Residual targets / residual image streams ---
-        if level == self.deepest_level:
-            train_targets = train_msks_l.astype(np.float32)
-            val_targets   = val_msks_l.astype(np.float32)
-            train_res_imgs = None
-            val_res_imgs   = None
-        else:
-            prev_tr_dir  = os.path.join(saveroot, "level_output", f"Deepest_level_{self.deepest_level}", f"level{level+1}", "train")
-            prev_val_dir = os.path.join(saveroot, "level_output", f"Deepest_level_{self.deepest_level}", f"level{level+1}", "val")
-
-            train_targets = build_level_targets(train_msks_l, train_names, level, self.deepest_level, prev_tr_dir)
-            val_targets   = build_level_targets(val_msks_l,   val_names,   level, self.deepest_level, prev_val_dir)
-            train_res_imgs = build_residual_input_from_previous(train_names, prev_tr_dir, train_imgs_l)
-            val_res_imgs   = build_residual_input_from_previous(val_names,   prev_val_dir, val_imgs_l)
-
-        # --- FeatGen-IMG ---
-        featgen_path = os.path.join(model_dir, f"featgen_img_lvl{level}.joblib")
-        if os.path.isfile(featgen_path):
-            logger.info(f"[FeatGen-IMG] Loading existing: {featgen_path}")
-            featgen = joblib.load(featgen_path)
-        else:
-            sel_indices = np.where(sel_mask2_tr)[0]
-            featgen = FeatGen3D(
-                kernel_size=kernel_size, kernel_depth=kernel_depth,
-                neigh_size=neigh_size, neigh_depth=neigh_depth, neigh_stride=neigh_stride,
-                use_grad=use_grad, grad_size=grad_size, grad_depth=grad_depth,
-                batch_centers=self.batch_centers, device=self.device,
-            )
-            featgen.fit(train_imgs_l, train_targets, sel_indices=sel_indices)
-            joblib.dump(featgen, featgen_path)
-            logger.info(f"[FeatGen-IMG] Saved to {featgen_path}")
-        self.featgen_img[lvl_idx] = featgen
-
-        # --- FeatGen-RES ---
-        featgen_res_path = os.path.join(model_dir, f"featgen_res_lvl{level}.joblib")
-        featgen_res = None
-        if level != self.deepest_level:
-            if os.path.isfile(featgen_res_path):
-                logger.info(f"[FeatGen-RES] Loading existing: {featgen_res_path}")
-                featgen_res = joblib.load(featgen_res_path)
-            else:
-                sel_indices = np.where(sel_mask2_tr)[0]
-                featgen_res = FeatGen3D(
-                    kernel_size=kernel_size, kernel_depth=kernel_depth,
-                    neigh_size=neigh_size, neigh_depth=neigh_depth, neigh_stride=neigh_stride,
-                    use_grad=False,
-                    grad_size=grad_size, grad_depth=grad_depth,
-                    batch_centers=self.batch_centers, device=self.device,
-                )
-                featgen_res.fit(train_res_imgs, train_targets, sel_indices=sel_indices)
-                joblib.dump(featgen_res, featgen_res_path)
-                logger.info(f"[FeatGen-RES] Saved to {featgen_res_path}")
-        self.featgen_res[lvl_idx] = featgen_res
-
-        # --- RFT + LNT (need extracted features) ---
-        rft_path = os.path.join(model_dir, f"rft_level{level}.joblib")
-        lnt_path = os.path.join(model_dir, f"lnt_level{level}.joblib")
-
-        if os.path.isfile(rft_path) and os.path.isfile(lnt_path):
-            logger.info("[RFT/LNT] Loading existing models.")
-            rft = joblib.load(rft_path)
-            lnt = joblib.load(lnt_path)
-        else:
-            # Extract features on selected samples to fit RFT + LNT
-            if level == self.deepest_level:
-                X_tr, y_tr = featgen.transform(train_imgs_l, train_targets, sel_mask_flat=sel_mask2_tr, verbose=True, name="FeatGen3D-IMG")
-                X_val, y_val = featgen.transform(val_imgs_l, val_targets, sel_mask_flat=sel_mask2_val, verbose=True, name="FeatGen3D-IMG")
-            else:
-                X_tr, y_tr = concat_img_res_features(featgen, featgen_res, train_imgs_l, train_res_imgs, train_targets,
-                                                      sel_mask_flat=sel_mask2_tr, verbose=True)
-                X_val, y_val = concat_img_res_features(featgen, featgen_res, val_imgs_l, val_res_imgs, val_targets,
-                                                        sel_mask_flat=sel_mask2_val, verbose=True)
-
-            X_tr  = X_tr.astype(np.float32, copy=False)
-            y_tr  = y_tr.astype(np.float32, copy=False)
-            X_val = X_val.astype(np.float32, copy=False)
-            y_val = y_val.astype(np.float32, copy=False)
-
-            if level == self.deepest_level:
-                feature_masks = build_feature_masks(featgen, X_tr.shape[1])
-            else:
-                feature_masks = build_feature_masks_from_featgens(featgen, featgen_res, X_tr.shape[1])
-
-            # RFT
-            if os.path.isfile(rft_path):
-                rft = joblib.load(rft_path)
-            else:
-                rft = DualRFT(n_bins=n_bins, n_selected=n_selected, feature_masks=feature_masks)
-                frac = self.rft_sample_frac
-                if frac and frac < 1.0:
-                    rng = np.random.default_rng(42)
-                    n_tr  = max(1, int(X_tr.shape[0]  * frac))
-                    n_val = max(1, int(X_val.shape[0] * frac))
-                    idx_tr  = rng.choice(X_tr.shape[0],  n_tr,  replace=False)
-                    idx_val = rng.choice(X_val.shape[0], n_val, replace=False)
-                    logger.info(f"[RFT] Subsampling for fit: {X_tr.shape[0]}→{n_tr} train, {X_val.shape[0]}→{n_val} val ({frac:.0%})")
-                    rft.fit(X_tr[idx_tr], y_tr[idx_tr], X_val[idx_val], y_val[idx_val])
-                else:
-                    rft.fit(X_tr, y_tr, X_val, y_val)
-                joblib.dump(rft, rft_path)
-                logger.info(f"[RFT] Saved to {rft_path}")
-                rft_plot_dir = os.path.join(saveroot, "plots", f"Deepest_level_{self.deepest_level}", f"level{level}", "rft")
-                os.makedirs(rft_plot_dir, exist_ok=True)
-                rft.plot(rft_plot_dir)
-            del X_val, y_val
-            gc.collect()
-
-            # LNT
-            if os.path.isfile(lnt_path):
-                lnt = joblib.load(lnt_path)
-            else:
-                X_tr_rft = rft.transform(X_tr).astype(np.float32, copy=False)
-                lnt = LNT(
-                    depth=lnt_depth, num_tree=lnt_num_tree,
-                    mode="gpu" if self.device.startswith("cuda") else "cpu",
-                    lnt_sample_frac=self.lnt_sample_frac,
-                )
-                lnt.fit(X_tr_rft, y_tr)
-                joblib.dump(lnt, lnt_path)
-                logger.info(f"[LNT] Saved to {lnt_path}")
-                del X_tr_rft
-
-            del X_tr, y_tr
-            gc.collect()
-
-        self.rft_models[lvl_idx] = rft
-        self.lnt_models[lvl_idx] = lnt
-
-        # --- Feature extraction to disk (full dataset) ---
-        tr_feat_dir  = os.path.join(saveroot, "features", f"Deepest_level_{self.deepest_level}", f"level{level}", "train")
-        val_feat_dir = os.path.join(saveroot, "features", f"Deepest_level_{self.deepest_level}", f"level{level}", "val")
-        os.makedirs(tr_feat_dir,  exist_ok=True)
-        os.makedirs(val_feat_dir, exist_ok=True)
-
-        frame_stride = self.batch_size * self.patch_depth
-        tr_ready  = _feature_batches_ready(tr_feat_dir,  train_imgs_l.shape[0], frame_stride)
-        val_ready = _feature_batches_ready(val_feat_dir, val_imgs_l.shape[0],   frame_stride)
-
-        if not tr_ready:
-            stream_extract_features(train_imgs_l, train_targets, featgen, rft, lnt,
-                                     tr_feat_dir, frame_stride,
-                                     residual_imgs=train_res_imgs, featgen_res=featgen_res)
-        if not val_ready:
-            stream_extract_features(val_imgs_l, val_targets, featgen, rft, lnt,
-                                     val_feat_dir, frame_stride,
-                                     residual_imgs=val_res_imgs, featgen_res=featgen_res)
-
-        # --- XGBoost ---
-        xgb_path = os.path.join(model_dir, f"xgb_level{level}.ubj")
-        sel_mask2_tr_dec, _  = apply_random_thinning(sel_mask1_tr,  select_perc=decode_pct)
-        sel_mask2_val_dec, _ = apply_random_thinning(sel_mask1_val, select_perc=val_dec_pct)
-
-        if os.path.isfile(xgb_path):
-            logger.info(f"[XGBoost] Loading existing: {xgb_path}")
-            xgb_model = xgb.XGBRegressor()
-            xgb_model.load_model(xgb_path)
-            xgb_model.get_booster().set_param("device", self.device)
-        else:
-            xgb_model = train_xgboost_model(
-                train_feature_dir=tr_feat_dir,
-                val_feature_dir=val_feat_dir,
-                sel_mask_train=sel_mask2_tr_dec,
-                sel_mask_val=sel_mask2_val_dec,
-                model_dir=model_dir,
-                level=level,
-                n_estimators=self.n_estimators,
-                max_depth=self.max_depth,
-                learning_rate=self.learning_rate,
-                early_stopping_rounds=self.early_stopping_rounds,
-                device=self.device,
-            )
-            xgb_model.get_booster().set_param("device", self.device)
-        self.xgb_models[lvl_idx] = xgb_model
-
-        # --- Save level output PNGs (needed as residual inputs for finer levels) ---
-        y_pred_tr  = run_full_prediction(tr_feat_dir,  xgb_model)
-        y_pred_val = run_full_prediction(val_feat_dir, xgb_model)
-
-        out_tr_dir  = os.path.join(saveroot, "level_output", f"Deepest_level_{self.deepest_level}", f"level{level}", "train")
-        out_val_dir = os.path.join(saveroot, "level_output", f"Deepest_level_{self.deepest_level}", f"level{level}", "val")
-
-        if level == self.deepest_level:
-            save_pred_as_masks(train_names, y_pred_tr,  out_tr_dir,  input_size=[size, size])
-            save_pred_as_masks(val_names,   y_pred_val, out_val_dir, input_size=[size, size])
-        else:
-            prev_tr_dir  = os.path.join(saveroot, "level_output", f"Deepest_level_{self.deepest_level}", f"level{level+1}", "train")
-            prev_val_dir = os.path.join(saveroot, "level_output", f"Deepest_level_{self.deepest_level}", f"level{level+1}", "val")
-            combine_pred_with_prev_and_save(train_names, prev_tr_dir,  y_pred_tr,  out_tr_dir,  level, self.deepest_level)
-            combine_pred_with_prev_and_save(val_names,   prev_val_dir, y_pred_val, out_val_dir, level, self.deepest_level)
-
-        logger.info(f"===== LEVEL {level} DONE =====")

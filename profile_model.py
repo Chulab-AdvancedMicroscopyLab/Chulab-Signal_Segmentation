@@ -1,8 +1,9 @@
 """
 profile_model.py — FLOPs, timing, and memory profiler for Chulab-Signal_Segmentation models.
 
-Profiles all four models (UNet, AttentionUNet, SwinUNETR, VNet) or a single selected model
-using random synthetic tensors. No real dataset required.
+Profiles all four DL models (UNet, AttentionUNet, SwinUNETR, VNet) or a single selected model
+using random synthetic tensors. No real dataset required. GUSL has no weights before training,
+so profile it from a trained checkpoint (--checkpoint works for any saved .pth).
 
 Usage:
   python profile_model.py                                    # all models, 3D defaults
@@ -11,6 +12,7 @@ Usage:
   python profile_model.py --spatial_dims 2 --patch 1 64 64  # 2D mode
   python profile_model.py --batch_size 4 --n_runs 20        # larger batch / more runs
   python profile_model.py --device cpu                       # CPU profiling
+  python profile_model.py --checkpoint out/GUSL_v1/weights/GUSL_v1.pth --patch 16 64 64 --batch_size 16
 """
 
 import argparse
@@ -25,6 +27,7 @@ import torch
 import torch.nn as nn
 
 from models.factory import build_model_from_config
+from models.GUSL import FeatGen, Regressor
 
 
 # ── formatting helpers ────────────────────────────────────────────────────────
@@ -138,6 +141,9 @@ _MODULE_REGISTRY = {
     nn.Dropout:             None,
     nn.Dropout2d:           None,
     nn.Dropout3d:           None,
+    # GUSL stages (FeatGen = Saab/raw/grad features, Regressor = RFT + LNT + XGBoost)
+    FeatGen:                None,
+    Regressor:              None,
 }
 
 
@@ -281,7 +287,12 @@ def profile_one(model_type, args, device):
 
     cfg = make_config(model_type, args.spatial_dims, args.in_channels, args.out_channels, args.patch)
     try:
-        model = build_model_from_config(cfg).to(device)
+        if args.checkpoint:
+            model = torch.load(args.checkpoint, weights_only=False).to(device)
+        elif model_type == "gusl":
+            raise ValueError("GUSL must be trained first; pass --checkpoint path/to/model.pth")
+        else:
+            model = build_model_from_config(cfg).to(device)
     except Exception as e:
         print(f"  [SKIP] Could not build {model_type}: {e}")
         return
@@ -348,6 +359,8 @@ def profile_one(model_type, args, device):
     # ── forward + backward ──
     print(f"\n  Forward + backward timing...")
     try:
+        if trainable_params == 0:
+            raise RuntimeError("no trainable parameters (non-gradient model)")
         bwd_mean, bwd_std = measure_forward_backward(model, x, device, args.n_warmup, args.n_runs)
         print(f"  Fwd+Bwd  : {_fmt_time(bwd_mean)} ± {_fmt_time(bwd_std)}")
         if fwd_mean:
@@ -377,7 +390,9 @@ def profile_one(model_type, args, device):
 def parse_args():
     p = argparse.ArgumentParser(description="Chulab model profiler (synthetic data)")
     p.add_argument("--model", type=str, default="all",
-                   choices=["all", "unet", "attention_unet", "swin_unetr", "vnet"])
+                   choices=["all", "unet", "attention_unet", "swin_unetr", "vnet", "gusl"])
+    p.add_argument("--checkpoint",   type=str, default=None,
+                   help="Profile a saved model (.pth) instead of building an untrained one. Required for gusl.")
     p.add_argument("--spatial_dims", type=int, default=3, choices=[2, 3])
     p.add_argument("--patch",        type=int, nargs="+", default=[32, 64, 64])
     p.add_argument("--in_channels",  type=int, default=1)
@@ -395,10 +410,10 @@ def main():
     args = parse_args()
     device = torch.device(f"cuda:{args.gpu}" if args.gpu is not None else args.device)
 
-    models_to_run = (
-        ["unet", "attention_unet", "swin_unetr", "vnet"]
-        if args.model == "all" else [args.model]
-    )
+    if args.checkpoint:
+        models_to_run = [args.model if args.model != "all" else "checkpoint"]
+    else:
+        models_to_run = ["unet", "attention_unet", "swin_unetr", "vnet"] if args.model == "all" else [args.model]
 
     spatial_str = "×".join(str(s) for s in args.patch)
     print(f"\n{'━'*68}")

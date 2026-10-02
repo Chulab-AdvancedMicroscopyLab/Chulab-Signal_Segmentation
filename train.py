@@ -238,13 +238,24 @@ def main():
         "unet": "UNet.py",
         "attention_unet": "AttentionUNet.py",
         "swin_unetr": "SwinUNETR.py",
-        "vnet": "VNet.py"
+        "vnet": "VNet.py",
+        "gusl": "GUSL.py"
     }
-    
+
     if model_type in model_source_map:
         model_src = os.path.join("models", model_source_map[model_type])
         if os.path.exists(model_src):
             shutil.copy2(model_src, os.path.join(artifact_path, model_source_map[model_type]))
+
+    # Model (built before the dataset: it decides whether patches get div-32 padding)
+    patch_size = config.get("training_patch_size", [16, 64, 64])
+    spatial_dims = 3 if patch_size[0] > 1 else 2
+
+    if model_type in full_config.get("model", {}):
+        full_config["model"][model_type]["spatial_dims"] = spatial_dims
+
+    model = build_model_from_config(full_config)
+    config.setdefault("pad_div32", getattr(model, "pad_div32", True))
 
     # Dataset & Dataloaders
     train_ds, val_ds = build_train_dataset_from_config(full_config, train_transform, val_transform)
@@ -270,19 +281,20 @@ def main():
         pin_memory=True
     )
     
-    # Model
-    patch_size = config.get("training_patch_size", [16, 64, 64])
-    spatial_dims = 3 if patch_size[0] > 1 else 2
-    
-    if model_type in full_config.get("model", {}):
-        full_config["model"][model_type]["spatial_dims"] = spatial_dims
-        
-    model = build_model_from_config(full_config)
     criterion = build_loss_from_config(full_config)
     metrics = build_metrics_from_config(full_config)
-    
+
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device)
+
+    # Non-gradient models (GUSL) train in one closed-form pass, then get the same validation report
+    if hasattr(model, "fit"):
+        model.fit(train_ds, val_ds, full_config, device)
+        save_checkpoint(model, weight_path, model_name)
+        val_results = valid_epoch(model, val_loader, criterion, metrics, device, epoch=0)
+        logger.info(" | ".join(f"{k}: {v:.4f}" for k, v in val_results.items()))
+        logging.info("Training complete.")
+        return
 
     # Note: If loading an existing model for fine-tuning, you would use load_checkpoint(path) here.
     

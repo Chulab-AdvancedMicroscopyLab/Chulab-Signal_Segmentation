@@ -318,7 +318,8 @@ def main():
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     logging.info(f"Loading model: {model_path}")
     model = load_checkpoint(model_path).to(device)
-    
+    config.setdefault("pad_div32", getattr(model, "pad_div32", True))
+
     volumes_to_process = []
     if root_input.name == input_name:
         volumes_to_process.append(root_input)

@@ -1,7 +1,5 @@
 import numpy as np
 from joblib import Parallel, delayed
-import os
-import matplotlib.pyplot as plt
 
 
 class FeatureTest:
@@ -104,7 +102,7 @@ class FeatureTest:
 
 
 class DualRFT:
-    def __init__(self, n_bins=32, n_selected=1000, feature_masks=None):
+    def __init__(self, n_bins=32, n_selected=1000):
         self.n_bins = n_bins
         self.n_selected = n_selected
         self.ft_train = FeatureTest(loss="rmse")
@@ -114,7 +112,6 @@ class DualRFT:
         self.val_ranks = None
         self.train_losses = None
         self.val_losses = None
-        self.feature_masks = feature_masks or {}
 
     def fit(self, X_train, y_train, X_val, y_val):
         self.ft_train.fit(X_train, y_train, n_bins=self.n_bins)
@@ -148,108 +145,3 @@ class DualRFT:
     def fit_transform(self, X_train, y_train, X_val, y_val):
         self.fit(X_train, y_train, X_val, y_val)
         return self.transform(X_train), self.transform(X_val)
-
-    def plot(self, save_root):
-        os.makedirs(save_root, exist_ok=True)
-        assert self.train_losses is not None
-
-        num_features = len(self.train_losses)
-        train_ranks = np.argsort(self.train_losses)
-        val_ranks = np.argsort(self.val_losses)
-
-        for name, ranks, losses, color in [
-            ("train", train_ranks, self.train_losses, "blue"),
-            ("val", val_ranks, self.val_losses, "blue"),
-        ]:
-            plt.figure(figsize=(8, 5))
-            plt.scatter(np.arange(num_features), losses[ranks], color=color, s=15)
-            plt.title(f"{'Train' if name == 'train' else 'Validation'} RMSE vs Feature Rank")
-            plt.xlabel("Feature Rank")
-            plt.ylabel("RMSE")
-            plt.grid(True)
-            plt.tight_layout()
-            path = os.path.join(save_root, f"{name}_rmse_rank_split.png")
-            plt.savefig(path)
-            plt.close()
-
-        train_rank_map = np.empty_like(train_ranks)
-        val_rank_map = np.empty_like(val_ranks)
-        train_rank_map[train_ranks] = np.arange(num_features)
-        val_rank_map[val_ranks] = np.arange(num_features)
-
-        plt.figure(figsize=(6, 6))
-        plt.scatter(train_rank_map, val_rank_map, s=20, alpha=0.25, label="All")
-
-        color_map = {"saab_img": "blue", "saab_laws": "purple", "raw": "green", "grad": "red"}
-        if self.feature_masks:
-            for name, mask in self.feature_masks.items():
-                if name not in color_map:
-                    continue
-                idx = np.where(np.asarray(mask, dtype=bool))[0]
-                if idx.size == 0:
-                    continue
-                plt.scatter(train_rank_map[idx], val_rank_map[idx], s=30,
-                            label=name, color=color_map[name], alpha=0.8)
-        else:
-            plt.scatter(train_rank_map[self.selected_features], val_rank_map[self.selected_features],
-                        color="red", s=40, label="Selected")
-
-        plt.xlabel("Train Rank")
-        plt.ylabel("Validation Rank")
-        plt.title("Train vs Validation Feature Rank")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(save_root, "train_vs_val_rank.png"))
-        plt.close()
-
-
-def build_feature_masks(featgen, num_feat_total: int):
-    saab_dim = int(getattr(featgen, "saab_dim", 0) or 0)
-    raw_dim = int(getattr(featgen, "raw_dim", 0) or 0)
-    grad_dim = int(getattr(featgen, "grad_dim", 0) or 0)
-    feat_dim = int(getattr(featgen, "feature_dim", 0) or 0)
-
-    if feat_dim <= 0:
-        raise ValueError("FeatGen must be fitted before building feature masks.")
-    if feat_dim != num_feat_total:
-        raise ValueError(f"FeatGen feature_dim ({feat_dim}) != num_feat_total ({num_feat_total})")
-    if saab_dim + raw_dim + grad_dim != feat_dim:
-        raise ValueError(f"Inconsistent FeatGen dims: saab={saab_dim}, raw={raw_dim}, grad={grad_dim}")
-
-    masks = {
-        "saab_img": np.zeros(num_feat_total, dtype=bool),
-        "saab_laws": np.zeros(num_feat_total, dtype=bool),
-        "raw": np.zeros(num_feat_total, dtype=bool),
-        "grad": np.zeros(num_feat_total, dtype=bool),
-    }
-    off = 0
-    masks["saab_img"][off:off + saab_dim] = True; off += saab_dim
-    masks["raw"][off:off + raw_dim] = True; off += raw_dim
-    if grad_dim > 0:
-        masks["grad"][off:off + grad_dim] = True; off += grad_dim
-    if off != num_feat_total:
-        raise ValueError(f"Final offset {off} != total {num_feat_total}")
-    return masks
-
-
-def build_feature_masks_from_featgens(fg_img, fg_res, num_feat_total):
-    masks = {
-        "saab": np.zeros(num_feat_total, dtype=bool),
-        "raw": np.zeros(num_feat_total, dtype=bool),
-        "grad": np.zeros(num_feat_total, dtype=bool),
-    }
-    offset = 0
-    for fg in [fg_img, fg_res]:
-        if fg is None:
-            continue
-        saab_dim = int(fg.saab_dim)
-        raw_dim = int(fg.raw_dim)
-        grad_dim = int(fg.grad_dim)
-        masks["saab"][offset:offset + saab_dim] = True; offset += saab_dim
-        masks["raw"][offset:offset + raw_dim] = True; offset += raw_dim
-        if grad_dim > 0:
-            masks["grad"][offset:offset + grad_dim] = True; offset += grad_dim
-    if offset != num_feat_total:
-        raise ValueError(f"Feature mask mismatch: offset={offset}, total={num_feat_total}")
-    return masks
