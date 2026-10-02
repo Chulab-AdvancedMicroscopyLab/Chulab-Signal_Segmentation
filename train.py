@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Callable, Union
 
 from monai.transforms.compose import Compose
 from monai.transforms.utility.dictionary import ToTensord
-from monai.transforms.spatial.dictionary import RandFlipd
+from monai.transforms.spatial.dictionary import RandFlipd, RandRotate90d
 from monai.transforms.intensity.dictionary import (
     GaussianSmoothd, NormalizeIntensityd, RandAdjustContrastd, RandBiasFieldd, 
     RandShiftIntensityd, RandScaleIntensityd, RandGaussianNoised
@@ -42,17 +42,27 @@ from utils.loss import build_loss_from_config
 logger = logging.getLogger(__name__)
 
 # Transforms
-train_transform = Compose([
-    ToTensord(keys=["image", "mask"], dtype=torch.float32),
-    # GaussianSmoothd(keys=["mask"], sigma=0.1),
-    AsDiscreted(keys=["mask"], threshold=0.5),
-    RandFlipd(keys=["image", "mask"], spatial_axis=1, prob=0.5),
+def build_train_transform(patch_size) -> Compose:
+    """Flips on every spatial axis + 90° rotations in-plane (only for square XY so batch shapes stay fixed)."""
+    n_spatial = 3 if patch_size[0] > 1 else 2
+    keys = ["image", "mask"]
+    geometric = [RandFlipd(keys=keys, spatial_axis=a, prob=0.5) for a in range(n_spatial)]
+    if patch_size[-1] == patch_size[-2]:
+        geometric.append(RandRotate90d(keys=keys, prob=0.5, max_k=3, spatial_axes=(n_spatial - 2, n_spatial - 1)))
+    return Compose([
+        ToTensord(keys=keys, dtype=torch.float32),
+        AsDiscreted(keys=["mask"], threshold=0.5),
+        *geometric,
+        *intensity_augment,
+    ])
+
+intensity_augment = [
     RandAdjustContrastd(keys=["image"], prob=0.3),
     # RandGaussianNoised(keys=["image"], prob=0.4, mean=0.0, std=0.1),
     RandBiasFieldd(keys=["image"], prob=0.2),
     RandShiftIntensityd(keys=["image"], offsets=0.2, prob=0.3),
     RandScaleIntensityd(keys=["image"], factors=0.2, prob=0.3),
-])
+]
 
 val_transform = Compose([
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
@@ -209,6 +219,7 @@ def main():
     config = full_config.get("train", {})
     seed = config.get("seed", 42)
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    train_transform = build_train_transform(config.get("training_patch_size", [16, 64, 64]))
     train_transform.set_random_state(seed)
     model_config = full_config.get("model", {})
     
