@@ -110,6 +110,7 @@ def disk_manager_worker(
     """
     prev_z_slices = None
     volume_shape = data_reader.volume_shape
+    threshold = full_config.get("inference", {}).get("output", {}).get("threshold", 0.5)  # foreground probability cut-off
 
     try:
         # Loop through the plan: Load N, then wait for results of N and Write N.
@@ -154,6 +155,7 @@ def disk_manager_worker(
                     z_overlay=res_z_overlay,
                     prev_z_slices=prev_z_slices,
                     resize_factor=resize_factor,
+                    threshold=threshold,
                     output_dtype=data_writer.output_dtype
                 )
 
@@ -179,6 +181,7 @@ def disk_manager_worker(
                 z_overlay=0, 
                 prev_z_slices=prev_z_slices,
                 resize_factor=resize_factor,
+                threshold=threshold,
                 output_dtype=data_writer.output_dtype
             )
 

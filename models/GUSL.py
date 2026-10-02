@@ -118,25 +118,72 @@ class FeatGen(nn.Module):
         return torch.cat(feats, 1)
 
 
+class MLPHead(nn.Module):
+    """Standardise -> MLP -> scalar. hidden=[] is a plain linear model."""
+
+    def __init__(self, mu, sd, hidden):
+        super().__init__()
+        self.register_buffer("mu", mu)
+        self.register_buffer("sd", sd)
+        layers, n = [], mu.numel()
+        for h in hidden:
+            layers += [nn.Linear(n, h), nn.ReLU()]
+            n = h
+        self.net = nn.Sequential(*layers, nn.Linear(n, 1))
+
+    def forward(self, X):
+        return self.net((X - self.mu) / self.sd).squeeze(1)
+
+
+def _fit_mlp(X, y, Xv, yv, hidden, epochs, lr, device, seed):
+    """Adam + MSE on the decode sample (kept on GPU), early stopping on validation MSE."""
+    torch.manual_seed(seed)
+    X, y = torch.from_numpy(X).to(device), torch.from_numpy(y).to(device)
+    Xv, yv = torch.from_numpy(Xv).to(device), torch.from_numpy(yv).to(device)
+    head = MLPHead(X.mean(0), X.std(0).clamp_min(1e-6), hidden).to(device)
+    opt = torch.optim.Adam(head.parameters(), lr=lr)
+    best, best_state, bad = float("inf"), None, 0
+    for ep in range(epochs):
+        with torch.enable_grad():
+            for idx in torch.randperm(len(X), device=device).split(65536):
+                loss = F.mse_loss(head(X[idx]), y[idx])
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                opt.step()
+        val = sum(F.mse_loss(head(a), b, reduction="sum").item() for a, b in zip(Xv.split(262144), yv.split(262144))) / len(Xv)
+        logger.info(f"[GUSL] MLP epoch {ep + 1}: val_rmse={val ** 0.5:.4f}")
+        if val < best:
+            best, best_state, bad = val, {k: v.clone() for k, v in head.state_dict().items()}, 0
+        else:
+            bad += 1
+            if bad >= 5:  # ponytail: fixed patience; make configurable if 5 epochs proves too short
+                break
+    head.load_state_dict(best_state)
+    return head.requires_grad_(False), best ** 0.5
+
+
 class Regressor(nn.Module):
-    """RFT column pick -> append LNT projections -> XGBoost. (B,F,D,H,W) -> (B,1,D,H,W)."""
+    """RFT column pick -> append LNT projections -> XGBoost or MLP. (B,F,D,H,W) -> (B,1,D,H,W)."""
 
     def __init__(self):
         super().__init__()
         self.register_buffer("rft_idx", torch.empty(0, dtype=torch.long))
         self.register_buffer("lnt_w", torch.empty(0))  # (m, F', 1, 1, 1)
         self.booster = None
+        self.mlp = None
 
     def project(self, f):
         f = f.index_select(1, self.rft_idx)
         return torch.cat([f, F.conv3d(f, self.lnt_w)], 1)
 
     def forward(self, f):
-        if self.booster is None:
+        mlp = getattr(self, "mlp", None)  # absent in checkpoints saved before the MLP head existed
+        if self.booster is None and mlp is None:
             raise RuntimeError("GUSL level not trained. Call fit() first.")
         f = self.project(f)
         B, C, D, H, W = f.shape
-        y = _xgb_predict(self.booster, f.movedim(1, -1).reshape(-1, C).contiguous())
+        X = f.movedim(1, -1).reshape(-1, C).contiguous()
+        y = mlp(X) if mlp is not None else _xgb_predict(self.booster, X)
         return y.view(B, D, H, W).unsqueeze(1)
 
 
@@ -196,7 +243,8 @@ class GUSL(nn.Module):
         n_bins=32, n_selected=500,
         lnt_depth=3, lnt_num_tree=150,
         boundary_window=5,
-        # final XGBoost
+        # final regressor: "xgboost" or "mlp" (mlp_hidden=[] -> linear)
+        head="xgboost", mlp_hidden=(256, 128), mlp_epochs=50, mlp_lr=1e-3,
         n_estimators=3000, max_depth=4, learning_rate=0.1, early_stopping_rounds=30, max_bin=256,
         # sampling (voxel counts per level)
         neg_keep_frac=0.15,
@@ -214,6 +262,9 @@ class GUSL(nn.Module):
         self.boundary_window = pl(boundary_window, "boundary_window")
         self.xgb_params = {"objective": "reg:squarederror", "eval_metric": "rmse", "tree_method": "hist",
                            "max_depth": max_depth, "eta": learning_rate, "max_bin": max_bin}
+        if head not in ("xgboost", "mlp"):
+            raise ValueError(f"head must be 'xgboost' or 'mlp', got {head!r}")
+        self.head, self.mlp_hidden, self.mlp_epochs, self.mlp_lr = head, list(mlp_hidden), mlp_epochs, mlp_lr
         self.n_estimators, self.early_stopping_rounds = n_estimators, early_stopping_rounds
         self.neg_keep_frac, self.seed = neg_keep_frac, seed
         self.saab_samples, self.encode_samples = saab_samples, encode_samples
@@ -270,6 +321,16 @@ class GUSL(nn.Module):
         # ponytail: chunks + cat = 2x peak host RAM of the sample; preallocate if decode_samples grows huge
         return torch.cat(Xs).numpy(), torch.cat(ys).numpy()
 
+    def _fit_xgb(self, lvl, X, y, Xv, yv, xgb_device, t0):
+        dtr = xgb.QuantileDMatrix(X, y, max_bin=self.xgb_params["max_bin"])
+        dva = xgb.QuantileDMatrix(Xv, yv, ref=dtr)
+        booster = xgb.train({**self.xgb_params, "device": xgb_device}, dtr,
+                            num_boost_round=self.n_estimators, evals=[(dva, "val")],
+                            early_stopping_rounds=self.early_stopping_rounds, verbose_eval=100)
+        lvl.head.booster = booster[: booster.best_iteration + 1]
+        logger.info(f"[GUSL] XGBoost best_iter={booster.best_iteration} val_rmse={booster.best_score:.4f} "
+                    f"({time.perf_counter() - t0:.0f}s)")
+
     @torch.no_grad()
     def _cache_prediction(self, src, li):
         lvl = self.levels[li]
@@ -315,21 +376,18 @@ class GUSL(nn.Module):
                         f"encode {len(X)}/{len(Xv)} ({time.perf_counter() - t0:.0f}s)")
             del X, y, Xv, yv
 
-            # 3. XGBoost on the decode sample
+            # 3. Final regressor on the decode sample
             project = lambda xl, prev_up: lvl.head.project(lvl.features(xl, prev_up))
             X, y = self._collect(tr, li, self.decode_samples, seed + 3, project)
             Xv, yv = self._collect(va, li, self.val_samples, seed + 4, project)
-            logger.info(f"[GUSL] XGBoost decode {X.shape} train / {Xv.shape} val ({X.nbytes / 1e9:.1f} GB)")
-            dtr = xgb.QuantileDMatrix(X, y, max_bin=self.xgb_params["max_bin"])
-            dva = xgb.QuantileDMatrix(Xv, yv, ref=dtr)
-            del X, y, Xv, yv
-            booster = xgb.train({**self.xgb_params, "device": xgb_device}, dtr,
-                                num_boost_round=self.n_estimators, evals=[(dva, "val")],
-                                early_stopping_rounds=self.early_stopping_rounds, verbose_eval=100)
-            lvl.head.booster = booster[: booster.best_iteration + 1]
-            del dtr, dva
-            logger.info(f"[GUSL] XGBoost best_iter={booster.best_iteration} val_rmse={booster.best_score:.4f} "
-                        f"({time.perf_counter() - t0:.0f}s)")
+            logger.info(f"[GUSL] {self.head} decode {X.shape} train / {Xv.shape} val ({X.nbytes / 1e9:.1f} GB)")
+            if self.head == "mlp":
+                lvl.head.mlp, rmse = _fit_mlp(X, y, Xv, yv, self.mlp_hidden, self.mlp_epochs, self.mlp_lr, device, seed)
+                del X, y, Xv, yv
+                logger.info(f"[GUSL] MLP {self.mlp_hidden} val_rmse={rmse:.4f} ({time.perf_counter() - t0:.0f}s)")
+            else:
+                self._fit_xgb(lvl, X, y, Xv, yv, xgb_device, t0)
+                del X, y, Xv, yv
 
             # 4. Dense prediction of this level, input to the next one
             if li < len(self.levels) - 1:
