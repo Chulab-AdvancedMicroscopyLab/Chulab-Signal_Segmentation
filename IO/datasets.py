@@ -119,12 +119,16 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         neg_keep_ratio: float = 1.0,
         input_name: str = "Flatten_561",
         mask_name: str = "Flatten_561_mask",
-        io_workers: int = 4
+        io_workers: int = 4,
+        val_ratio: float = 0.0,
+        seed: int = 42,
     ):
         from utils.normalization import build_normalizer_from_config
 
         all_image_patches = []
         all_mask_patches = []
+        all_is_val = []
+        rng = np.random.default_rng(seed)
         
         image_roots = [image_root] if isinstance(image_root, str) else image_root
         mask_roots = [mask_root] if isinstance(mask_root, str) else mask_root
@@ -191,7 +195,19 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             img_data = normalizer(img_data)
             
             indices = generate_patch_indices(img_data.shape, patch_size, overlap)
-            filtered = filter_indices_by_mask(msk_data, indices, neg_keep_ratio)
+            filtered = filter_indices_by_mask(msk_data, indices, neg_keep_ratio, rng=rng)
+
+            # Block-wise validation: last ~val_ratio of Z (at least one patch deep). Patches crossing
+            # the cut are dropped so train and val never share voxels, even with overlapping crops.
+            z_cut = min(int(img_data.shape[0] * (1 - val_ratio)), img_data.shape[0] - patch_size[0])
+            if val_ratio > 0 and z_cut >= patch_size[0]:
+                filtered = [p for p in filtered if p.z_slice.stop <= z_cut or p.z_slice.start >= z_cut]
+                is_val = [p.z_slice.start >= z_cut for p in filtered]
+            else:
+                # ponytail: volume too shallow for a Z block; its patches all go to train
+                if val_ratio > 0:
+                    logger.warning(f"Volume {v_display_name}: too shallow for a Z validation block; all patches used for training.")
+                is_val = [False] * len(filtered)
 
             # ponytail: empty-mask volumes yield 0 patches; skip so torch.cat doesn't choke on a (0,...) tensor
             if len(filtered) == 0:
@@ -207,14 +223,15 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             if pad_d > 0 or pad_h > 0 or pad_w > 0:
                 patch_pad = ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w))
                 img_patches = _pad_image(img_patches, patch_pad, pad_mode, fill=normalizer.get_background_value())
-                msk_patches = _pad_image(msk_patches, patch_pad, "constant", fill=0.0)
+                msk_patches = _pad_image(msk_patches, patch_pad, pad_mode, fill=0.0)  # same padding as image, so labels match
                 logger.debug(f"Patches div-32 padded: ({d},{h},{w}) -> ({d+pad_d},{h+pad_h},{w+pad_w})")
 
             # Convert to torch and add channel dimension: (N, D, H, W) -> (N, 1, D, H, W)
             all_image_patches.append(torch.from_numpy(img_patches).unsqueeze(1))
             all_mask_patches.append(torch.from_numpy(msk_patches).unsqueeze(1))
+            all_is_val.extend(is_val)
             
-            logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches.")
+            logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches ({sum(is_val)} validation, z >= {z_cut}).")
             
         if not all_image_patches:
             raise RuntimeError(f"No valid patches were extracted from {image_root}")
@@ -225,13 +242,15 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         # patch_indices should be for the final total number of patches
         patch_indices = [PatchMetadata(volume_idx=i) for i in range(len(image_stack))]
         
-        return cls(
+        ds = cls(
             image_tensors=[image_stack],
             mask_tensors=[mask_stack],
             patch_indices=patch_indices,
             transform=transform,
             is_patch_mode=True
         )
+        ds.is_val = np.array(all_is_val, dtype=bool)
+        return ds
 
     def split(
         self, 
@@ -240,15 +259,20 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         train_transform: Optional[Callable] = None,
         val_transform: Optional[Callable] = None
     ) -> tuple[TrainMicroscopyDataset, TrainMicroscopyDataset]:
-        """Splits indices while keeping the underlying shared tensors identical."""
+        """Splits indices while keeping the underlying shared tensors identical.
+
+        Uses the block-wise is_val flags from from_folders when present; otherwise a seeded random split.
+        """
         n = len(self.patch_indices)
-        indices = np.arange(n)
-        rng = np.random.default_rng(seed)
-        rng.shuffle(indices)
-        
-        val_n = int(n * val_ratio)
-        val_idx = indices[:val_n]
-        train_idx = indices[val_n:]
+        is_val = getattr(self, "is_val", None)
+        if is_val is not None and is_val.any():
+            val_idx, train_idx = np.flatnonzero(is_val), np.flatnonzero(~is_val)
+        else:
+            indices = np.arange(n)
+            np.random.default_rng(seed).shuffle(indices)
+            val_n = int(n * val_ratio)
+            val_idx, train_idx = indices[:val_n], indices[val_n:]
+        logger.info(f"Split: {len(train_idx)} train / {len(val_idx)} val patches")
         
         train_ds = TrainMicroscopyDataset(
             image_tensors=self.image_tensors,
@@ -372,7 +396,9 @@ def build_train_dataset_from_config(
         neg_keep_ratio=neg_ratio,
         input_name=config.get("input_name", "images"),
         mask_name=config.get("mask_name", "images_mask"),
-        io_workers=io_workers
+        io_workers=io_workers,
+        val_ratio=val_ratio,
+        seed=seed,
     )
 
     return full_dataset.split(

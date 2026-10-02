@@ -10,7 +10,9 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 import argparse
+import math
 import os
+import random
 import torch
 import torch.optim as optim
 import json
@@ -205,6 +207,9 @@ def main():
     initialize_concurrency(full_config)
         
     config = full_config.get("train", {})
+    seed = config.get("seed", 42)
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    train_transform.set_random_state(seed)
     model_config = full_config.get("model", {})
     
     img_root, mask_root = config.get("img_path"), config.get("mask_path")
@@ -299,7 +304,14 @@ def main():
     # Note: If loading an existing model for fine-tuning, you would use load_checkpoint(path) here.
     
     optimizer = optim.AdamW(model.parameters(), lr=config.get("learning_rate", 1e-4), weight_decay=config.get("weight_decay", 1e-5))
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    # Linear warmup, then cosine decay to 1% of the base LR over the remaining epochs
+    n_epochs = config.get("training_epochs", 30)
+    warmup = config.get("warmup_epochs", 5)
+    def lr_factor(e):
+        if e < warmup:
+            return (e + 1) / warmup
+        return 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * (e - warmup) / max(1, n_epochs - warmup)))
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
     
     history: Dict[str, Dict[str, List[float]]] = {n: {"train": [], "val": []} for n in list(metrics.keys()) + ["loss"]}
     best_val_loss = float("inf")
@@ -313,8 +325,8 @@ def main():
     # but based on user request, let's just use loss for training to be fastest.
     # We will compute all metrics only during validation.
     
-    for epoch in range(config.get("training_epochs", 30)):
-        print("\n"); logger.info(f"Epoch {epoch + 1}")
+    for epoch in range(n_epochs):
+        print("\n"); logger.info(f"Epoch {epoch + 1}  lr={optimizer.param_groups[0]['lr']:.2e}")
         
         # Calculate heavy metrics only on interval epochs
         is_metric_epoch = (epoch + 1) % metric_interval == 0
@@ -360,7 +372,7 @@ def main():
 
         val_avg_loss = val_results["loss"]
 
-        scheduler.step(val_avg_loss)
+        scheduler.step()
         if val_avg_loss < best_val_loss:
             best_val_loss = val_avg_loss; save_checkpoint(model, weight_path, model_name)
         

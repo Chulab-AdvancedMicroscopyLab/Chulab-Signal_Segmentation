@@ -137,7 +137,8 @@ def filter_indices_by_mask(
     mask: np.ndarray,
     indices: List[PatchSlice],
     neg_keep_ratio: float = 1.0,
-    threshold: float = 0.5
+    threshold: float = 0.5,
+    rng: np.random.Generator = None,
 ) -> List[PatchSlice]:
     """
     Filters patch indices based on mask content (positive vs negative sampling).
@@ -145,6 +146,7 @@ def filter_indices_by_mask(
     """
     if not indices:
         return []
+    rng = rng if rng is not None else np.random.default_rng(0)
 
     # Extract start coordinates for Numba
     starts = np.array([
@@ -176,14 +178,14 @@ def filter_indices_by_mask(
     n_keep_neg = int(len(pos_indices) * neg_keep_ratio)
     if neg_indices:
         # Shuffle negative indices and take a subset
-        np.random.shuffle(neg_indices)
+        rng.shuffle(neg_indices)
         selected_negs = neg_indices[:n_keep_neg]
         result = pos_indices + selected_negs
     else:
         result = pos_indices
         
     # Shuffle the final combined list for training randomization
-    np.random.shuffle(result)
+    rng.shuffle(result)
     return result
 
 def extract_data_from_indices(

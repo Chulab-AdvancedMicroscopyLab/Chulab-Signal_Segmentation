@@ -7,6 +7,7 @@ class VNet(nn.Module):
     A wrapper for MONAI's VNet.
     Designed for volumetric medical image segmentation with residual connections.
     """
+    pad_div32 = False  # only needs dims divisible by its total stride, not 32
     def __init__(
         self,
         spatial_dims,

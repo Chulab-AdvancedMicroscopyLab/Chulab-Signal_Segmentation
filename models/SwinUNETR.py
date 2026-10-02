@@ -8,6 +8,7 @@ class SwinUNETR(nn.Module):
     State-of-the-art Transformer-based encoder for 3D segmentation.
     Note: For MONAI 1.1+, img_size is no longer required.
     """
+    pad_div32 = True  # Swin windows need spatial dims divisible by 32
     def __init__(
         self, 
         in_channels, 
