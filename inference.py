@@ -111,6 +111,7 @@ def disk_manager_worker(
     prev_z_slices = None
     volume_shape = data_reader.volume_shape
     threshold = full_config.get("inference", {}).get("output", {}).get("threshold", 0.5)  # foreground probability cut-off
+    blend = full_config.get("inference", {}).get("blend", "gaussian")  # overlap weighting: gaussian | constant
 
     try:
         # Loop through the plan: Load N, then wait for results of N and Write N.
@@ -156,6 +157,7 @@ def disk_manager_worker(
                     prev_z_slices=prev_z_slices,
                     resize_factor=resize_factor,
                     threshold=threshold,
+                    blend=blend,
                     output_dtype=data_writer.output_dtype
                 )
 
@@ -182,6 +184,7 @@ def disk_manager_worker(
                 prev_z_slices=prev_z_slices,
                 resize_factor=resize_factor,
                 threshold=threshold,
+                blend=blend,
                 output_dtype=data_writer.output_dtype
             )
 
