@@ -153,7 +153,7 @@
     ],
     "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin",
     "_comment_model": "model_name = experiment subfolder under save_path; model_type = architecture key from the model registry above.",
-    "model_name": "GUSL_v6_ns300",
+    "model_name": "GUSL_v7",
     "model_type": "gusl",
     "input_name": "images",
     "mask_name": "images_mask",
