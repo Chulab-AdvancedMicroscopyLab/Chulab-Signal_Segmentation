@@ -76,10 +76,11 @@ def _flops_conv(m, inp, out):
     return 2 * kernel_ops * out.shape[1] * out_elems
 
 def _flops_convtranspose(m, inp, out):
+    # each INPUT element scatters into out_channels/groups x kernel outputs (counting output elements
+    # over-counts by stride^dims, e.g. 8x for a stride-2 3D up-convolution)
     k = m.kernel_size if isinstance(m.kernel_size, (list, tuple)) else [m.kernel_size]
-    kernel_ops = (m.in_channels // m.groups) * int(torch.prod(torch.tensor(k, dtype=torch.float)).item())
-    out_elems  = out.numel() // out.shape[1]
-    return 2 * kernel_ops * out.shape[1] * out_elems
+    kernel_vol = int(torch.prod(torch.tensor(k, dtype=torch.float)).item())
+    return 2 * inp[0].numel() * (m.out_channels // m.groups) * kernel_vol
 
 def _flops_linear(m, inp, out):
     return 2 * m.in_features * out.numel()
@@ -299,6 +300,16 @@ def profile_one(model_type, args, device):
 
     total_params, trainable_params = _param_count(model)
     print(f"  Parameters : {total_params:,} total  ({trainable_params:,} trainable)")
+
+    if hasattr(model, "flop_report"):   # GUSL: analytic per-voxel cost (hooks can't see XGBoost)
+        rows, tot = model.flop_report()
+        print(f"\n  GUSL cost per output voxel (MACs: algorithmic / as implemented; FLOPs = 2 x MACs)")
+        print(f"  {'level':>5} {'vox frac':>8} {'MACs alg':>10} {'MACs impl':>10} {'other ops':>10} {'tree cmp':>10}")
+        for r in rows:
+            print(f"  {r['level']:>5} {r['voxel_fraction']:>8.4f} {r['macs_alg']:>10.0f} {r['macs_impl']:>10.0f} {r['ops']:>10.0f} {r['tree_cmp']:>10.0f}")
+        print(f"  {'total':>5} {'':>8} {tot['macs_alg']:>10.0f} {tot['macs_impl']:>10.0f} {tot['ops']:>10.0f} {tot['tree_cmp']:>10.0f}")
+        print(f"  FLOPs/voxel: {_fmt_flops(2 * tot['macs_alg'])} algorithmic, {_fmt_flops(2 * tot['macs_impl'])} as implemented, "
+              f"+ {tot['tree_cmp']:.0f} tree comparisons")
 
     # SwinUNETR needs spatial dims divisible by 32
     spatial = list(args.patch if args.spatial_dims == 3 else args.patch[-2:])

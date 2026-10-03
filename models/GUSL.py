@@ -289,6 +289,71 @@ class GUSL(nn.Module):
         logits = torch.log(p) - torch.log1p(-p)  # stitcher thresholds logits at 0 (= p 0.5)
         return logits.squeeze(2) if is2d else logits
 
+    # ------------------------------------------------------------------ cost accounting
+
+    def flop_report(self):
+        """
+        Inference cost per output (full-resolution) voxel, per level, for a trained model.
+
+        Returns a list of dicts (one per level) and a total. MACs count multiply-accumulates:
+          macs_alg  - algorithmically required (Saab projection, LNT projection, MLP head); window
+                      gathers (raw patch, gradient window, neighbour shifts) cost 0
+          macs_impl - as implemented here (gathers run as identity convolutions)
+          ops       - other elementwise ops (resampling, gradient maps, residual add, logit)
+          tree_cmp  - XGBoost node comparisons (mean leaf depth x trees), not multiply-adds
+        FLOPs = 2 x MACs. Coarser levels are scaled by the fraction of voxels they process.
+        """
+        rows = []
+        for li, lvl in enumerate(self.levels):
+            frac = 1.0 / lvl.scale ** 2                      # level processes 1/s^2 of the XY voxels
+            macs_alg = macs_impl = ops = 0.0
+            streams = [(lvl.fg_img, True)] + ([(lvl.fg_res, False)] if lvl.fg_res is not None else [])
+            for fg, is_img in streams:
+                P = fg.kd * fg.k ** 2
+                n_k = fg.saab_w.shape[0] if fg.saab_w.numel() else P
+                macs_alg += n_k * P                          # Saab projection
+                macs_impl += n_k * P + P * P                 # + raw patch via identity conv
+                if fg.use_grad:
+                    G = fg.gd * fg.gs ** 2
+                    ops += 8 * 4                             # 8 neighbour diffs: sub, abs, max, add
+                    macs_impl += 2 * G * G                   # gradient window via identity conv
+                if not is_img:
+                    ops += 1 + 7                             # residual input (x - prev) + bilinear upsample
+            if lvl.scale > 1:
+                ops += lvl.scale ** 2                        # average-pool downsample
+            h = lvl.head
+            F_sel = int(h.rft_idx.numel())
+            m = int(h.lnt_w.shape[0]) if h.lnt_w.numel() else 0
+            macs_alg += F_sel * m; macs_impl += F_sel * m    # LNT projection
+            tree_cmp = 0.0
+            mlp = getattr(h, "mlp", None)
+            if mlp is not None:
+                lin = [mod for mod in mlp.net if isinstance(mod, nn.Linear)]
+                mm = sum(mod.in_features * mod.out_features for mod in lin) + (F_sel + m)  # + standardise
+                macs_alg += mm; macs_impl += mm
+            elif h.booster is not None:
+                df = h.booster.trees_to_dataframe()
+                parents = dict(zip(df["Yes"].dropna(), df.loc[df["Yes"].notna(), "ID"]))
+                parents.update(dict(zip(df["No"].dropna(), df.loc[df["No"].notna(), "ID"])))
+                def d(node):
+                    k = 0
+                    while node in parents:
+                        node = parents[node]; k += 1
+                    return k
+                leaves = df.loc[df["Feature"] == "Leaf", "ID"]
+                mean_leaf_depth = float(sum(d(n) for n in leaves) / max(len(leaves), 1))
+                n_trees = h.booster.num_boosted_rounds()
+                tree_cmp = n_trees * mean_leaf_depth
+                ops += n_trees                               # leaf-value accumulation
+            ops += 1                                         # residual add / clamp
+            rows.append({"level": len(self.levels) - li, "voxel_fraction": frac,
+                         "macs_alg": macs_alg * frac, "macs_impl": macs_impl * frac,
+                         "ops": ops * frac, "tree_cmp": tree_cmp * frac,
+                         "features": F_sel, "lnt": m})
+        total = {k: sum(r[k] for r in rows) for k in ("macs_alg", "macs_impl", "ops", "tree_cmp")}
+        total["ops"] += 4                                    # final logit
+        return rows, total
+
     # ------------------------------------------------------------------ training
 
     def _weights(self, ml, li):
