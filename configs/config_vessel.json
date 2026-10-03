@@ -199,7 +199,7 @@
     "output_path": "/mnt/DAS100T/Ya-Hui_Lin/BV_normalization/BV_ROIs",
     "input_name": "images",
     "output_name": "images_mask",
-    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/Swin_UNETR_v0/weights/Swin_UNETR_v0.pth",
+    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/UNet_v2/weights/UNet_v2.pth",
     "_comment_preprocess": "Same normalization applied at inference. sample_rate controls fraction of voxels sampled for global stats computation.",
     "preprocess": {
       "normalize_mode": "z-score",
@@ -217,6 +217,8 @@
     "output": {
       "type": "Zarr",
       "dtype": "uint8",
+      "_comment_threshold": "Foreground probability cut-off applied after stitching; 0.9 was best for UNet_v2 on the Lectin test volume.",
+      "threshold": 0.9,
       "resize_order": 0
     }
   },
