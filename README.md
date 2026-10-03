@@ -54,8 +54,9 @@ python analysis.py  --base_dir /path/to/test_root --config configs/config_vessel
 | Config | Data | Model it is tuned for |
 |---|---|---|
 | `config_vessel.json` | Lectin vessels | UNet (overlapping crops, augmentation, lr 3e-4), threshold 0.9; `gusl` entry holds the tuned vessel GUSL |
-| `config_GUSL.json` | Lectin vessels | lean GUSL (3 levels, Z-neighbour features, 150 RFT features, ≤150 depth-6 trees per level), threshold 0.7 |
-| `config_cfos.json` | c-Fos cells (Hung-Yu) | UNet with recall-weighted Tversky, threshold 0.1; `gusl` entry = lean half-resolution GUSL (threshold 0.4), ~40% less inference energy than the UNet |
+| `config_GUSL_vessel.json` | Lectin vessels | lean GUSL (3 levels, Z-neighbour features, 150 RFT features, ≤150 depth-6 trees per level), threshold 0.7 |
+| `config_cfos.json` | c-Fos cells (Hung-Yu) | UNet with recall-weighted Tversky, threshold 0.1 |
+| `config_GUSL_cfos.json` | c-Fos cells (Hung-Yu) | lean half-resolution GUSL (`levels 2, finest_level 2`), threshold 0.4 — ~40% less inference energy than the c-Fos UNet |
 | `config_cell.json` | general cell template | — |
 
 In the vessel, GUSL and c-Fos configs `train.model_name` is a fresh run name, so retraining does not overwrite the kept best models (`inference.model_path` points at those).

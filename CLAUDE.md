@@ -28,11 +28,11 @@ python converter.py --config configs/config_cell.json
 python analysis.py --base_dir ./datas/path/to/results --config configs/config_cell.json
 
 # GUSL (non-DL: Saab + RFT + LNT + XGBoost) uses the same scripts — just model_type "gusl"
-python train.py --config configs/config_GUSL.json
+python train.py --config configs/config_GUSL_vessel.json
 
 # Profile models on synthetic tensors (FLOPs, latency, memory) — no data needed
 python profile_model.py --model unet --gpu 0
-python profile_model.py --checkpoint output/Lectin/GUSL_v1/weights/GUSL_v1.pth --patch 16 64 64 --batch_size 16
+python profile_model.py --checkpoint output/Lectin/GUSL_lean_L5/weights/GUSL_lean_L5.pth --patch 16 64 64 --batch_size 16
 
 # Docker: builds image, mounts only ./datas at /workspace/datas, interactive bash, cleans up on exit
 python run_docker.py
@@ -70,7 +70,7 @@ Key config fields in `"train"`:
 
 Inference: `inference.blend` (`gaussian` default / `constant`) weights overlapping patches; `inference.output.threshold` is the probability cut-off (default 0.5) and must be tuned per model/data.
 
-Configs: `config_vessel.json` (Lectin vessels, tuned UNet), `config_GUSL.json` (Lectin, tuned GUSL), `config_cfos.json` (c-Fos Hung-Yu, tuned UNet + `gusl` entry), `config_cell.json` (template; user-owned paths).
+Configs: `config_vessel.json` (Lectin vessels, tuned UNet), `config_GUSL_vessel.json` (Lectin, lean GUSL), `config_cfos.json` (c-Fos Hung-Yu, tuned UNet), `config_GUSL_cfos.json` (c-Fos, half-resolution GUSL), `config_cell.json` (template; user-owned paths).
 
 Top-level `"resources"` (`numba_threads`, `dask_threads`, `io_workers`, `metrics_workers`, `memory_limit` GB) is read by `utils/concurrency.py`, datasets, inference, metrics, converter — tune threads/memory there, not per script.
 

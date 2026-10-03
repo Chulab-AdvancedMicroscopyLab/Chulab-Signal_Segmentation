@@ -1,0 +1,322 @@
+{
+  "resources": {
+    "numba_threads": 16,
+    "dask_threads": 16,
+    "io_workers": 8,
+    "metrics_workers": 16,
+    "memory_limit": 64
+  },
+  "normalization": {
+    "description": "Registry of available intensity normalization methods.",
+    "z-score": {
+      "std_multiplier": 1
+    },
+    "min-max": {},
+    "histogram": {
+      "bins": 1024
+    },
+    "min-max-gamma": {
+      "gamma": 5
+    }
+  },
+  "outputs": {
+    "description": "Registry of global defaults for each output format.",
+    "zarr": {
+      "chunk_size": [
+        128,
+        128,
+        128
+      ]
+    },
+    "ome-zarr": {
+      "n_level": 5,
+      "resize_factor": 2,
+      "chunk_size": [
+        128,
+        128,
+        128
+      ]
+    },
+    "scroll-tif": {
+      "axis": 0
+    },
+    "single-tiff": {}
+  },
+  "model": {
+    "description": "Registry of available model architectures and their default parameters.",
+    "unet": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "channels": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ],
+      "strides": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "num_res_units": 2,
+      "dropout": 0.1
+    },
+    "vnet": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "dropout_prob": 0.5
+    },
+    "attention_unet": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "channels": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ],
+      "strides": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "dropout": 0.1
+    },
+    "swin_unetr": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "feature_size": 48,
+      "use_checkpoint": false
+    },
+    "gusl": {
+      "_comment": "Non-DL coarse-to-fine model (Saab + RFT + LNT + XGBoost). Per-level lists run deepest -> level 1 (one value = all levels). Level L works at XY scale 1/2^(L-1).",
+      "levels": 2,
+      "finest_level": 2,
+      "kernel_size": [
+        3,
+        3
+      ],
+      "kernel_depth": [
+        3,
+        3
+      ],
+      "neigh_size": [
+        3,
+        3
+      ],
+      "neigh_depth": [
+        5,
+        5
+      ],
+      "neigh_stride": [
+        2,
+        2
+      ],
+      "use_grad": [
+        true,
+        true
+      ],
+      "grad_size": [
+        3,
+        5
+      ],
+      "grad_depth": [
+        3,
+        3
+      ],
+      "n_bins": 32,
+      "n_selected": 150,
+      "lnt_depth": 3,
+      "lnt_num_tree": 30,
+      "_comment_sampling": "Voxel samples per level: positives and negatives within boundary_window of the mask are always eligible, other negatives with prob neg_keep_frac; caps bound RAM. decode_samples x ~600 features x 4 B = host RAM for XGBoost.",
+      "boundary_window": [
+        5,
+        7
+      ],
+      "neg_keep_frac": 0.4,
+      "saab_samples": 200000,
+      "encode_samples": 2000000,
+      "decode_samples": 8000000,
+      "val_samples": 1000000,
+      "_comment_head": "Final regressor per level: xgboost (trees) or mlp (torch MLP on GPU; mlp_hidden [] = linear model). Both early-stop on the validation sample.",
+      "head": "xgboost",
+      "mlp_hidden": [
+        256,
+        128
+      ],
+      "mlp_epochs": 50,
+      "mlp_lr": 0.001,
+      "_comment_xgb": "XGBoost settings (head = xgboost).",
+      "n_estimators": 150,
+      "max_depth": 6,
+      "learning_rate": 0.3,
+      "early_stopping_rounds": 30,
+      "max_bin": 256,
+      "seed": 42
+    }
+  },
+  "loss": {
+    "description": "Registry of available loss functions and their default parameters.",
+    "dice": {
+      "smooth": 1e-06
+    },
+    "focal": {
+      "alpha": 0.8,
+      "gamma": 2.0
+    },
+    "tversky": {
+      "alpha": 0.3,
+      "beta": 0.7,
+      "smooth": 1e-06
+    },
+    "log_cosh_dice": {
+      "smooth": 1e-06
+    },
+    "bce": {}
+  },
+  "metrics": {
+    "description": "Registry of available metrics and their default parameters.",
+    "dice_soft": {
+      "smooth": 1e-05
+    },
+    "dice_hard": {
+      "smooth": 1e-05
+    },
+    "iou": {
+      "smooth": 1e-05
+    },
+    "bce": {},
+    "mcc": {},
+    "cldice": {},
+    "hausdorff": {
+      "hd_percentile": 95.0
+    },
+    "pr_auc": {}
+  },
+  "train": {
+    "_comment_device": "GPU device for training, e.g. 'cuda:0', 'cuda:1', or 'cpu'.",
+    "device": "cuda:0",
+    "_comment_paths": "data_path = list of training data directories; save_path = root dir for weights and logs.",
+    "data_path": [
+      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/training-data/Hung-Yu-3D-special"
+    ],
+    "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos",
+    "_comment_model": "GUSL for c-Fos: lean settings, one half-resolution level (levels 2, finest_level 2). model_name is a fresh run name; inference loads the kept GUSL_cfos_half.",
+    "model_name": "GUSL_cfos_v3",
+    "model_type": "gusl",
+    "input_name": "images",
+    "mask_name": "images_mask",
+    "_comment_preprocess": "normalize_mode = z-score|min-max|histogram|min-max-gamma; high_cut clips intensity before normalization (null = no clip).",
+    "preprocess": {
+      "normalize_mode": "z-score",
+      "pad_mode": "reflect",
+      "sample_rate": 1.0,
+      "low_cut": null,
+      "high_cut": null
+    },
+    "_comment_loss": "Weighted sum of loss functions. Keys are loss names from the loss registry, values are their scalar weights.",
+    "loss": {
+      "tversky": 1,
+      "focal": 0.2
+    },
+    "_comment_metrics": "Metrics evaluated each metric_interval epochs. Keys from the metrics registry.",
+    "metrics": [
+      "dice_soft",
+      "dice_hard",
+      "bce"
+    ],
+    "metric_interval": 1,
+    "val_ratio": 0.1,
+    "seed": 42,
+    "training_epochs": 30,
+    "training_batch_size": 8,
+    "training_num_workers": 8,
+    "_comment_patch": "training_patch_size = [D, H, W] of each 3D crop fed to the model; training_overlay = voxel overlap between adjacent crops; training_neg_keep_ratio = fraction of background-only patches retained.",
+    "training_patch_size": [
+      16,
+      64,
+      64
+    ],
+    "training_overlay": [
+      8,
+      32,
+      32
+    ],
+    "training_neg_keep_ratio": 1.0,
+    "training_resize_factor": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "_comment_training": "training_epochs = total epochs; training_batch_size = patches per GPU step; learning_rate = Adam optimizer LR.",
+    "learning_rate": 0.0003,
+    "visualize_preview": true,
+    "warmup_epochs": 2
+  },
+  "inference": {
+    "device": "cuda:0",
+    "_comment_paths": "input_path / input_name = source volume location; output_path / output_name = destination for the predicted mask.",
+    "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special",
+    "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special",
+    "input_name": "images",
+    "output_name": "images_mask_gusl_cfos",
+    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos/GUSL_cfos_half/weights/GUSL_cfos_half.pth",
+    "_comment_preprocess": "Same normalization applied at inference. sample_rate controls fraction of voxels sampled for global stats computation.",
+    "preprocess": {
+      "normalize_mode": "z-score",
+      "pad_mode": "reflect",
+      "sample_rate": 1.0,
+      "low_cut": null,
+      "high_cut": null
+    },
+    "_comment_patch": "inference_patch_size = [D, H, W] sliding window; inference_overlay = voxel overlap between windows (larger = smoother tile boundaries, slower).",
+    "batch_size": 16,
+    "inference_patch_size": [
+      16,
+      64,
+      64
+    ],
+    "inference_overlay": [
+      8,
+      16,
+      16
+    ],
+    "inference_resize_factor": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "_comment_output": "type = output format (Zarr|Scroll-Tiff|Single-Tiff); dtype = output bit depth; resize_order = interpolation order for optional spatial resize.",
+    "output": {
+      "type": "Scroll-Tiff",
+      "dtype": "uint8",
+      "resize_order": 0,
+      "threshold": 0.4,
+      "_comment_threshold": "Best cut-off for GUSL_cfos_half on the Hung-Yu test."
+    }
+  },
+  "converter": [
+    {
+      "input_path": "/mnt/DAS218T/Ian_Huang/project_20260310_Shaun_BV_tumor/20260312_12_09_11_PC25J0018_treat_4_tumor_CD31_640_4x_z2_Destripe_DONE/All_Channels_anno_shrink.tif",
+      "output_path": "/mnt/DAS218T/Ian_Huang/project_20260310_Shaun_BV_tumor/20260312_12_09_11_PC25J0018_treat_4_tumor_CD31_640_4x_z2_Destripe_DONE",
+      "output": {
+        "type": "Zarr",
+        "dtype": "uint8",
+        "resize_shape": [
+          3343,
+          5841,
+          7331
+        ],
+        "resize_order": 0
+      }
+    }
+  ]
+}
