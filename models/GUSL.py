@@ -236,6 +236,7 @@ class GUSL(nn.Module):
     def __init__(
         self,
         levels=2,
+        finest_level=1,  # stop at this level (>1 = coarser output, upsampled to full resolution)
         # per-level (deepest -> level 1, or one value for all)
         kernel_size=3, kernel_depth=3,
         neigh_size=3, neigh_depth=1, neigh_stride=2,
@@ -253,8 +254,16 @@ class GUSL(nn.Module):
         spatial_dims=3,  # injected by train.py; 2 forces every depth extent to 1
     ):
         super().__init__()
-        n = levels
-        pl = lambda v, name: _per_level(v, n, name)
+        if not 1 <= finest_level <= levels:
+            raise ValueError(f"finest_level must be in 1..levels ({levels}), got {finest_level}")
+        self.top_level = levels
+        n = levels - finest_level + 1  # levels actually run: levels .. finest_level
+
+        def pl(v, name):
+            # per-level lists may list the run levels (n) or all configured levels (deepest first)
+            if isinstance(v, (list, tuple)) and len(v) == levels and n < levels:
+                v = list(v)[:n]
+            return _per_level(v, n, name)
         if spatial_dims == 2:
             kernel_depth = neigh_depth = grad_depth = 1
         self.n_bins, self.n_selected = pl(n_bins, "n_bins"), pl(n_selected, "n_selected")
@@ -274,7 +283,7 @@ class GUSL(nn.Module):
             kernel_size=kernel_size, kernel_depth=kernel_depth, neigh_size=neigh_size, neigh_depth=neigh_depth,
             neigh_stride=neigh_stride, use_grad=use_grad, grad_size=grad_size, grad_depth=grad_depth).items()}
         self.levels = nn.ModuleList([
-            GUSLLevel(scale=2 ** (n - 1 - i), residual=i > 0, **{k: v[i] for k, v in fg.items()})
+            GUSLLevel(scale=2 ** (levels - 1 - i), residual=i > 0, **{k: v[i] for k, v in fg.items()})
             for i in range(n)
         ])
 
@@ -285,6 +294,8 @@ class GUSL(nn.Module):
         pred = None
         for lvl in self.levels:
             pred = lvl(x, pred)
+        if pred.shape[-3:] != x.shape[-3:]:  # finest_level > 1: upsample the coarse prediction
+            pred = F.interpolate(pred, size=x.shape[-3:], mode="trilinear", align_corners=False)
         p = pred.clamp(1e-4, 1 - 1e-4)
         logits = torch.log(p) - torch.log1p(-p)  # stitcher thresholds logits at 0 (= p 0.5)
         return logits.squeeze(2) if is2d else logits
@@ -346,12 +357,14 @@ class GUSL(nn.Module):
                 tree_cmp = n_trees * mean_leaf_depth
                 ops += n_trees                               # leaf-value accumulation
             ops += 1                                         # residual add / clamp
-            rows.append({"level": len(self.levels) - li, "voxel_fraction": frac,
+            rows.append({"level": getattr(self, "top_level", len(self.levels)) - li, "voxel_fraction": frac,
                          "macs_alg": macs_alg * frac, "macs_impl": macs_impl * frac,
                          "ops": ops * frac, "tree_cmp": tree_cmp * frac,
                          "features": F_sel, "lnt": m})
         total = {k: sum(r[k] for r in rows) for k in ("macs_alg", "macs_impl", "ops", "tree_cmp")}
         total["ops"] += 4                                    # final logit
+        if self.levels[-1].scale > 1:
+            total["ops"] += 7                                # upsample coarse output to full resolution
         return rows, total
 
     # ------------------------------------------------------------------ training
@@ -438,7 +451,7 @@ class GUSL(nn.Module):
         logger.info(f"[GUSL] {len(tr.idx)} train / {len(va.idx)} val patches, batch={bs}, device={device}")
 
         for li, lvl in enumerate(self.levels):
-            level = len(self.levels) - li
+            level = getattr(self, "top_level", len(self.levels)) - li
             seed = self.seed + 100 * li
             t0 = time.perf_counter()
             logger.info(f"[GUSL] ===== level {level} (XY scale 1/{lvl.scale}) =====")
