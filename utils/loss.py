@@ -78,6 +78,41 @@ class LogCoshDiceLoss(nn.Module):
         dice_loss = self.dice(outputs, targets)
         return torch.log(torch.cosh(dice_loss))
 
+def _soft_erode(x):
+    k = (3,) * (x.ndim - 2)
+    pool = F.max_pool3d if x.ndim == 5 else F.max_pool2d
+    return -pool(-x, k, 1, 1)
+
+
+def _soft_skel(x, iterations):
+    """Differentiable skeleton via iterated soft morphological opening (Shit et al., clDice, CVPR 2021)."""
+    k = (3,) * (x.ndim - 2)
+    pool = F.max_pool3d if x.ndim == 5 else F.max_pool2d
+    open_ = lambda t: pool(_soft_erode(t), k, 1, 1)
+    skel = F.relu(x - open_(x))
+    for _ in range(iterations):
+        x = _soft_erode(x)
+        delta = F.relu(x - open_(x))
+        skel = skel + F.relu(delta - skel * delta)
+    return skel
+
+
+class ClDiceLoss(nn.Module):
+    """Topology-aware loss: skeleton of the prediction inside the mask + mask skeleton covered by the prediction."""
+    def __init__(self, iterations: int = 10, smooth: float = 1.0, from_logits: bool = True):
+        super().__init__()
+        self.iterations = iterations
+        self.smooth = smooth
+        self.from_logits = from_logits
+
+    def forward(self, outputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if self.from_logits:
+            outputs = torch.sigmoid(outputs)
+        skel_p, skel_t = _soft_skel(outputs, self.iterations), _soft_skel(targets, self.iterations)
+        tprec = ((skel_p * targets).sum() + self.smooth) / (skel_p.sum() + self.smooth)
+        tsens = ((skel_t * outputs).sum() + self.smooth) / (skel_t.sum() + self.smooth)
+        return 1 - 2 * tprec * tsens / (tprec + tsens)
+
 class CombinedLoss(nn.Module):
     def __init__(self, losses: Dict[str, nn.Module], weights: Dict[str, float]):
         super().__init__()
@@ -119,7 +154,8 @@ def build_loss_from_config(full_config: dict) -> nn.Module:
         "focal": lambda cfg: FocalLoss(alpha=cfg.get("alpha", 0.8), gamma=cfg.get("gamma", 2.0)),
         "tversky": lambda cfg: TverskyLoss(alpha=cfg.get("alpha", 0.5), beta=cfg.get("beta", 0.5), smooth=cfg.get("smooth", 1e-6)),
         "log_cosh_dice": lambda cfg: LogCoshDiceLoss(smooth=cfg.get("smooth", 1e-6)),
-        "bce": lambda _: nn.BCEWithLogitsLoss()
+        "bce": lambda _: nn.BCEWithLogitsLoss(),
+        "cldice": lambda cfg: ClDiceLoss(iterations=cfg.get("iterations", 10), smooth=cfg.get("smooth", 1.0)),
     }
 
     built_losses = {}
