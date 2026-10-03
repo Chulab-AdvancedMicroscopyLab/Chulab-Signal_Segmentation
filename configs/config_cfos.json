@@ -99,6 +99,7 @@
     "gusl": {
       "_comment": "Non-DL coarse-to-fine model (Saab + RFT + LNT + XGBoost). Per-level lists run deepest -> level 1 (one value = all levels). Level L works at XY scale 1/2^(L-1).",
       "levels": 2,
+      "finest_level": 2,
       "kernel_size": [
         3,
         3
@@ -299,7 +300,7 @@
       "dtype": "uint8",
       "resize_order": 0,
       "threshold": 0.1,
-      "_comment_threshold": "Best cut-offs on the Hung-Yu test: UNet_cfos_v2 0.1, GUSL_cfos_lean 0.4 (set model_path + threshold accordingly)."
+      "_comment_threshold": "Best cut-offs on the Hung-Yu test: UNet_cfos_v2 0.1, GUSL_cfos_half 0.4 (set model_path + threshold accordingly)."
     }
   },
   "converter": [

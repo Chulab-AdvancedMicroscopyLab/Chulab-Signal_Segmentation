@@ -54,8 +54,8 @@ python analysis.py  --base_dir /path/to/test_root --config configs/config_vessel
 | Config | Data | Model it is tuned for |
 |---|---|---|
 | `config_vessel.json` | Lectin vessels | UNet (overlapping crops, augmentation, lr 3e-4), threshold 0.9; `gusl` entry holds the tuned vessel GUSL |
-| `config_GUSL.json` | Lectin vessels | GUSL (3 levels, Z-neighbour features, 300 RFT features), threshold 0.7 |
-| `config_cfos.json` | c-Fos cells (Hung-Yu) | UNet with recall-weighted Tversky, threshold 0.1; `gusl` entry holds the tuned c-Fos GUSL (threshold 0.4) |
+| `config_GUSL.json` | Lectin vessels | lean GUSL (3 levels, Z-neighbour features, 150 RFT features, ≤150 depth-6 trees per level), threshold 0.7 |
+| `config_cfos.json` | c-Fos cells (Hung-Yu) | UNet with recall-weighted Tversky, threshold 0.1; `gusl` entry = lean half-resolution GUSL (threshold 0.4), ~40% less inference energy than the UNet |
 | `config_cell.json` | general cell template | — |
 
 In the vessel, GUSL and c-Fos configs `train.model_name` is a fresh run name, so retraining does not overwrite the kept best models (`inference.model_path` points at those).
@@ -114,7 +114,7 @@ Hyperparameters per loss; `train.loss` picks a weighted sum, e.g. `{"tversky": 1
 A non-backprop, coarse-to-fine voxel regressor. Each level (deepest → level 1, at XY scale 1/2^(L-1)) computes Saab, neighbourhood, raw and gradient features on the GPU, keeps the most informative ones (RFT), adds linear projections (LNT), and regresses the residual of the coarser level with XGBoost (or a small MLP). It saves as a normal `.pth` and runs through the standard inference pipeline.
 
 Key `model.gusl` options (per-level lists run deepest → level 1; a single value applies to all levels):
-- `levels`; `kernel_size`, `kernel_depth`; `neigh_size`, `neigh_depth`, `neigh_stride`; `use_grad`, `grad_size`, `grad_depth`.
+- `levels`, `finest_level` (stop at a coarser level and upsample the output — e.g. `levels: 2, finest_level: 2` = one half-resolution level; best for compact objects like c-Fos cells); `kernel_size`, `kernel_depth`; `neigh_size`, `neigh_depth`, `neigh_stride`; `use_grad`, `grad_size`, `grad_depth`.
 - `n_selected` (RFT features kept), `lnt_depth`, `lnt_num_tree`, `boundary_window`, `neg_keep_frac`.
 - Sample caps (voxels per level): `saab_samples`, `encode_samples`, `decode_samples`, `val_samples`. `decode_samples` drives memory (~8M samples ≈ 14 GB, on the GPU when cupy is installed).
 - `head`: `xgboost` (default) or `mlp` (`mlp_hidden: []` = linear). XGBoost: `n_estimators`, `max_depth`, `learning_rate`, `early_stopping_rounds`, `max_bin`.
