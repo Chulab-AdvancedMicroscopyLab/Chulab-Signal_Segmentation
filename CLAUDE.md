@@ -65,6 +65,12 @@ Key config fields in `"train"`:
 - `training_patch_size`: `[D, H, W]` — if `D == 1`, model uses 2D mode (patch dim squeezed automatically)
 - `loss`: dict of `{loss_name: weight}` — weighted sum from loss registry
 - `metrics`: list of metric keys from metrics registry; computed every `metric_interval` epochs
+- `val_ratio`: held-out validation **block** (last slab of Z, or the longest axis for thin stacks; see `_val_block` in `IO/datasets.py`), never random neighbouring patches; patch sampling is seeded from `seed`
+- `warmup_epochs` + `learning_rate`: linear warmup then cosine decay (no ReduceLROnPlateau)
+
+Inference: `inference.blend` (`gaussian` default / `constant`) weights overlapping patches; `inference.output.threshold` is the probability cut-off (default 0.5) and must be tuned per model/data.
+
+Configs: `config_vessel.json` (Lectin vessels, tuned UNet), `config_GUSL.json` (Lectin, tuned GUSL), `config_cfos.json` (c-Fos Hung-Yu, tuned UNet + `gusl` entry), `config_cell.json` (template; user-owned paths).
 
 Top-level `"resources"` (`numba_threads`, `dask_threads`, `io_workers`, `metrics_workers`, `memory_limit` GB) is read by `utils/concurrency.py`, datasets, inference, metrics, converter — tune threads/memory there, not per script.
 
