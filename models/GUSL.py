@@ -306,24 +306,51 @@ class GUSL(nn.Module):
             ml = _down(m, lvl.scale)
             yield xl, prev_up, (ml if prev_up is None else ml - prev_up), self._weights(ml, li)
 
-    def _collect(self, src, li, cap, seed, fn):
-        """Weighted random sample of ~cap voxels -> (fn(xl, prev_up) rows, targets) as numpy."""
+    def _collect(self, src, li, cap, seed, fn, on_gpu=False):
+        """Weighted random sample of ~cap voxels -> (fn(xl, prev_up) rows, targets) as numpy.
+
+        Three passes over the patches: sampling-weight total, a cheap count of the kept voxels, then
+        the feature pass writing straight into an exact-size array. The seeded generator draws the same
+        selection in the last two passes, so the sample is held once (no chunk list + concat).
+        on_gpu=True keeps it in GPU memory as torch tensors instead of host numpy arrays.
+        """
         total = sum(float(w.sum()) for *_, w in self._level_inputs(src, li))
         rate = min(1.0, cap / max(total, 1.0))
-        g = None
-        Xs, ys = [], []
-        for xl, prev_up, target, w in self._level_inputs(src, li):
-            if g is None:
-                g = torch.Generator(device=w.device).manual_seed(seed)
-            keep = (torch.rand(w.shape, generator=g, device=w.device) < w * rate)[:, 0]
-            Xs.append(fn(xl, prev_up).movedim(1, -1)[keep].cpu())
-            ys.append(target[:, 0][keep].cpu())
-        # ponytail: chunks + cat = 2x peak host RAM of the sample; preallocate if decode_samples grows huge
-        return torch.cat(Xs).numpy(), torch.cat(ys).numpy()
 
-    def _fit_xgb(self, lvl, X, y, Xv, yv, xgb_device, t0):
+        def kept():
+            g = None
+            for xl, prev_up, target, w in self._level_inputs(src, li):
+                if g is None:
+                    g = torch.Generator(device=w.device).manual_seed(seed)
+                yield xl, prev_up, target, (torch.rand(w.shape, generator=g, device=w.device) < w * rate)[:, 0]
+
+        n = sum(int(keep.sum()) for *_, keep in kept())
+        X = y = None
+        pos = 0
+        for xl, prev_up, target, keep in kept():
+            rows = fn(xl, prev_up).movedim(1, -1)[keep]
+            if X is None:
+                if on_gpu:
+                    X = torch.empty((n, rows.shape[1]), dtype=torch.float32, device=rows.device)
+                    y = torch.empty(n, dtype=torch.float32, device=rows.device)
+                else:
+                    X = np.empty((n, rows.shape[1]), dtype=np.float32)
+                    y = np.empty(n, dtype=np.float32)
+            X[pos:pos + len(rows)] = rows if on_gpu else rows.cpu().numpy()
+            y[pos:pos + len(rows)] = target[:, 0][keep] if on_gpu else target[:, 0][keep].cpu().numpy()
+            pos += len(rows)
+        assert pos == n, f"sample count changed between passes ({pos} vs {n})"
+        return X, y
+
+    def _fit_xgb(self, lvl, data, xgb_device, t0):
+        """data = [X, y, Xv, yv]; emptied once the quantile matrices are built so host RAM is freed."""
+        X, y, Xv, yv = [cupy.asarray(a) if torch.is_tensor(a) else a for a in data]  # GPU tensors: zero-copy
         dtr = xgb.QuantileDMatrix(X, y, max_bin=self.xgb_params["max_bin"])
         dva = xgb.QuantileDMatrix(Xv, yv, ref=dtr)
+        data.clear()
+        del X, y, Xv, yv
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         booster = xgb.train({**self.xgb_params, "device": xgb_device}, dtr,
                             num_boost_round=self.n_estimators, evals=[(dva, "val")],
                             early_stopping_rounds=self.early_stopping_rounds, verbose_eval=100)
@@ -369,25 +396,32 @@ class GUSL(nn.Module):
             rft = DualRFT(n_bins=self.n_bins[li], n_selected=min(self.n_selected[li], X.shape[1]))
             rft.fit(X, y, Xv, yv)
             idx = rft.selected_features
-            W = fit_lnt(X[:, idx], y, depth=self.lnt_depth[li], num_tree=self.lnt_num_tree[li], device=xgb_device)
+            n_feat, n_enc, n_val = X.shape[1], len(X), len(Xv)
+            X = X[:, idx]          # LNT only needs the selected columns: free the full encode/val samples first
+            del Xv, yv
+            W = fit_lnt(X, y, depth=self.lnt_depth[li], num_tree=self.lnt_num_tree[li], device=xgb_device)
+            del X, y
             lvl.head.rft_idx = torch.from_numpy(idx).long().to(device)
             lvl.head.lnt_w = torch.from_numpy(W.T.copy()).float().view(W.shape[1], W.shape[0], 1, 1, 1).to(device)
-            logger.info(f"[GUSL] features {X.shape[1]} -> RFT {len(idx)} + LNT {W.shape[1]}, "
-                        f"encode {len(X)}/{len(Xv)} ({time.perf_counter() - t0:.0f}s)")
-            del X, y, Xv, yv
+            logger.info(f"[GUSL] features {n_feat} -> RFT {len(idx)} + LNT {W.shape[1]}, "
+                        f"encode {n_enc}/{n_val} ({time.perf_counter() - t0:.0f}s)")
 
             # 3. Final regressor on the decode sample
             project = lambda xl, prev_up: lvl.head.project(lvl.features(xl, prev_up))
-            X, y = self._collect(tr, li, self.decode_samples, seed + 3, project)
-            Xv, yv = self._collect(va, li, self.val_samples, seed + 4, project)
-            logger.info(f"[GUSL] {self.head} decode {X.shape} train / {Xv.shape} val ({X.nbytes / 1e9:.1f} GB)")
+            # XGBoost on GPU with cupy: keep the decode sample in GPU memory (no host copy at all)
+            on_gpu = self.head == "xgboost" and device.type == "cuda" and cupy is not None
+            X, y = self._collect(tr, li, self.decode_samples, seed + 3, project, on_gpu=on_gpu)
+            Xv, yv = self._collect(va, li, self.val_samples, seed + 4, project, on_gpu=on_gpu)
+            logger.info(f"[GUSL] {self.head} decode {tuple(X.shape)} train / {tuple(Xv.shape)} val "
+                        f"({X.nbytes / 1e9:.1f} GB, {'GPU' if on_gpu else 'host'})")
             if self.head == "mlp":
                 lvl.head.mlp, rmse = _fit_mlp(X, y, Xv, yv, self.mlp_hidden, self.mlp_epochs, self.mlp_lr, device, seed)
                 del X, y, Xv, yv
                 logger.info(f"[GUSL] MLP {self.mlp_hidden} val_rmse={rmse:.4f} ({time.perf_counter() - t0:.0f}s)")
             else:
-                self._fit_xgb(lvl, X, y, Xv, yv, xgb_device, t0)
+                data = [X, y, Xv, yv]
                 del X, y, Xv, yv
+                self._fit_xgb(lvl, data, xgb_device, t0)
 
             # 4. Dense prediction of this level, input to the next one
             if li < len(self.levels) - 1:
