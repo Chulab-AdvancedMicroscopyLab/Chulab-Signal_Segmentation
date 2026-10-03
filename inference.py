@@ -314,6 +314,7 @@ def main():
         
     root_input = Path(input_path_str).resolve()
     root_output = Path(output_path_str).resolve()
+    root_output.mkdir(parents=True, exist_ok=True)
 
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
