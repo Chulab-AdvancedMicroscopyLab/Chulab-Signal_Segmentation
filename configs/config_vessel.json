@@ -69,6 +69,7 @@
     "gusl": {
       "_comment": "Non-DL coarse-to-fine model (Saab + RFT + LNT + XGBoost). Per-level lists run deepest -> level 1 (one value = all levels). Level L works at XY scale 1/2^(L-1).",
       "levels": 3,
+      "finest_level": 2,
       "kernel_size": [3, 3, 3],
       "kernel_depth": [3, 3, 3],
       "neigh_size": [3, 3, 3],
