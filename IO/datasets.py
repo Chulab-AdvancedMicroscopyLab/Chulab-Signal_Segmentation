@@ -23,6 +23,23 @@ def _volume_pad_widths(shape: Tuple[int, int, int], min_size: Tuple[int, int, in
         (0, max(0, min_size[2] - shape[2])), # X end
     ]
 
+def _val_block(shape, patch_size, val_ratio):
+    """
+    Choose the held-out validation block: (axis, cut) with val = [cut:] along axis, or None.
+
+    Prefers the last ~val_ratio of Z (whole slices). If that block would exceed 2x val_ratio of the
+    volume (thin stacks, where it must still be one patch deep), uses the axis with room for the most patches.
+    """
+    if val_ratio <= 0:
+        return None
+    def cut_on(a):
+        return min(int(shape[a] * (1 - val_ratio)), shape[a] - patch_size[a])
+    axis = 0
+    if (shape[0] - cut_on(0)) > 2 * val_ratio * shape[0]:
+        axis = max(range(3), key=lambda a: shape[a] // patch_size[a])
+    cut = cut_on(axis)
+    return (axis, cut) if cut >= patch_size[axis] else None
+
 def _div32_pad_widths(d: int, h: int, w: int, is_3d: bool) -> Tuple[int, int, int]:
     """Return (pad_d, pad_h, pad_w) to make dims divisible by 32."""
     pad_d = (32 - d % 32) % 32 if is_3d else 0
@@ -197,17 +214,21 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             indices = generate_patch_indices(img_data.shape, patch_size, overlap)
             filtered = filter_indices_by_mask(msk_data, indices, neg_keep_ratio, rng=rng)
 
-            # Block-wise validation: last ~val_ratio of Z (at least one patch deep). Patches crossing
-            # the cut are dropped so train and val never share voxels, even with overlapping crops.
-            z_cut = min(int(img_data.shape[0] * (1 - val_ratio)), img_data.shape[0] - patch_size[0])
-            if val_ratio > 0 and z_cut >= patch_size[0]:
-                filtered = [p for p in filtered if p.z_slice.stop <= z_cut or p.z_slice.start >= z_cut]
-                is_val = [p.z_slice.start >= z_cut for p in filtered]
+            # Block-wise validation (see _val_block). Patches crossing the cut are dropped so train and
+            # val never share voxels, even with overlapping crops.
+            block = _val_block(img_data.shape, patch_size, val_ratio)
+            if block is not None:
+                axis, cut = block
+                span = lambda p: (p.z_slice, p.y_slice, p.x_slice)[axis]
+                filtered = [p for p in filtered if span(p).stop <= cut or span(p).start >= cut]
+                is_val = [span(p).start >= cut for p in filtered]
+                val_desc = f"{'zyx'[axis]} >= {cut}"
             else:
-                # ponytail: volume too shallow for a Z block; its patches all go to train
+                # ponytail: volume too small for a validation block; its patches all go to train
                 if val_ratio > 0:
-                    logger.warning(f"Volume {v_display_name}: too shallow for a Z validation block; all patches used for training.")
+                    logger.warning(f"Volume {v_display_name}: too small for a validation block; all patches used for training.")
                 is_val = [False] * len(filtered)
+                val_desc = "none"
 
             # ponytail: empty-mask volumes yield 0 patches; skip so torch.cat doesn't choke on a (0,...) tensor
             if len(filtered) == 0:
@@ -231,7 +252,7 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             all_mask_patches.append(torch.from_numpy(msk_patches).unsqueeze(1))
             all_is_val.extend(is_val)
             
-            logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches ({sum(is_val)} validation, z >= {z_cut}).")
+            logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches ({sum(is_val)} validation, {val_desc}).")
             
         if not all_image_patches:
             raise RuntimeError(f"No valid patches were extracted from {image_root}")
