@@ -134,4 +134,4 @@ python analysis.py --base_dir /path/to/test_root --output_name evaluation_report
 ```
 Ground truth = every folder ending `_mask` under `--base_dir`; predictions = sibling folders ending `.scroll-tif(f)`. Writes `<output_name>.xlsx` with per-model metrics. `--config` only supplies the `metrics` registry parameters.
 
-For downstream vessel / cell statistics use `Chulab-Signal_Analyzer` (`vessel_analyzer.py`, `cell_analyzer.py`). For vessel masks set `"fill_holes_px": 10` in each `vessel_analyzer` task: small holes inside vessels otherwise create false trifurcations.
+For downstream vessel / cell statistics use `Chulab-Signal_Analyzer` (`vessel_analyzer.py`, `cell_analyzer.py`). For vessel masks set `"fill_holes_px": 10` in each `vessel_analyzer` task: small holes inside vessels otherwise create false trifurcations. For cell masks set `"min_cell_size": 10` in each `cell_analyzer` task so segmentation specks are not counted as cells (needed for GUSL predictions).
