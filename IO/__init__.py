@@ -7,10 +7,10 @@ direct, single-file metadata/array opening.
 from .reader import FileReader
 from .writer import FileWriter
 from .datasets import (
-    BaseMicroscopyDataset, 
-    TrainMicroscopyDataset, 
+    BaseMicroscopyDataset,
+    TrainMicroscopyDataset,
     InferenceMicroscopyDataset,
-    build_train_dataset_from_config
+    build_train_dataset_from_config,
 )
 from .IO_types import OUTPUT_CHOICES, TYPE_MAP, VALID_SUFFIXES, VolumeMetadata
 

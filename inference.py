@@ -110,6 +110,8 @@ def disk_manager_worker(
     """
     prev_z_slices = None
     volume_shape = data_reader.volume_shape
+    threshold = full_config.get("inference", {}).get("output", {}).get("threshold", 0.5)  # foreground probability cut-off
+    blend = full_config.get("inference", {}).get("blend", "gaussian")  # overlap weighting: gaussian | constant
 
     try:
         # Loop through the plan: Load N, then wait for results of N and Write N.
@@ -154,6 +156,8 @@ def disk_manager_worker(
                     z_overlay=res_z_overlay,
                     prev_z_slices=prev_z_slices,
                     resize_factor=resize_factor,
+                    threshold=threshold,
+                    blend=blend,
                     output_dtype=data_writer.output_dtype
                 )
 
@@ -179,6 +183,8 @@ def disk_manager_worker(
                 z_overlay=0, 
                 prev_z_slices=prev_z_slices,
                 resize_factor=resize_factor,
+                threshold=threshold,
+                blend=blend,
                 output_dtype=data_writer.output_dtype
             )
 
@@ -308,6 +314,7 @@ def main():
         
     root_input = Path(input_path_str).resolve()
     root_output = Path(output_path_str).resolve()
+    root_output.mkdir(parents=True, exist_ok=True)
 
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -318,7 +325,8 @@ def main():
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     logging.info(f"Loading model: {model_path}")
     model = load_checkpoint(model_path).to(device)
-    
+    config.setdefault("pad_div32", getattr(model, "pad_div32", True))
+
     volumes_to_process = []
     if root_input.name == input_name:
         volumes_to_process.append(root_input)

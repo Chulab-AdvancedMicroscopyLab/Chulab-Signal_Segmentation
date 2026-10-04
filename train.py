@@ -10,7 +10,9 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 import argparse
+import math
 import os
+import random
 import torch
 import torch.optim as optim
 import json
@@ -20,7 +22,7 @@ from typing import Dict, List, Optional, Callable, Union
 
 from monai.transforms.compose import Compose
 from monai.transforms.utility.dictionary import ToTensord
-from monai.transforms.spatial.dictionary import RandFlipd
+from monai.transforms.spatial.dictionary import RandFlipd, RandRotate90d
 from monai.transforms.intensity.dictionary import (
     GaussianSmoothd, NormalizeIntensityd, RandAdjustContrastd, RandBiasFieldd, 
     RandShiftIntensityd, RandScaleIntensityd, RandGaussianNoised
@@ -40,21 +42,30 @@ from utils.loss import build_loss_from_config
 logger = logging.getLogger(__name__)
 
 # Transforms
-train_transform = Compose([
-    ToTensord(keys=["image", "mask"], dtype=torch.float32),
-    # GaussianSmoothd(keys=["mask"], sigma=0.1),
-    AsDiscreted(keys=["mask"], threshold=0.5),
-    RandFlipd(keys=["image", "mask"], spatial_axis=1, prob=0.5),
+def build_train_transform(patch_size) -> Compose:
+    """Flips on every spatial axis + 90° rotations in-plane (only for square XY so batch shapes stay fixed)."""
+    n_spatial = 3 if patch_size[0] > 1 else 2
+    keys = ["image", "mask"]
+    geometric = [RandFlipd(keys=keys, spatial_axis=a, prob=0.5) for a in range(n_spatial)]
+    if patch_size[-1] == patch_size[-2]:
+        geometric.append(RandRotate90d(keys=keys, prob=0.5, max_k=3, spatial_axes=(n_spatial - 2, n_spatial - 1)))
+    return Compose([
+        ToTensord(keys=keys, dtype=torch.float32),
+        AsDiscreted(keys=["mask"], threshold=0.5),
+        *geometric,
+        *intensity_augment,
+    ])
+
+intensity_augment = [
     RandAdjustContrastd(keys=["image"], prob=0.3),
     # RandGaussianNoised(keys=["image"], prob=0.4, mean=0.0, std=0.1),
     RandBiasFieldd(keys=["image"], prob=0.2),
     RandShiftIntensityd(keys=["image"], offsets=0.2, prob=0.3),
     RandScaleIntensityd(keys=["image"], factors=0.2, prob=0.3),
-])
+]
 
 val_transform = Compose([
     ToTensord(keys=["image", "mask"], dtype=torch.float32),
-    # GaussianSmoothd(keys=["mask"], sigma=0.1),
     AsDiscreted(keys=["mask"], threshold=0.5),
 ])
 
@@ -206,6 +217,10 @@ def main():
     initialize_concurrency(full_config)
         
     config = full_config.get("train", {})
+    seed = config.get("seed", 42)
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    train_transform = build_train_transform(config.get("training_patch_size", [16, 64, 64]))
+    train_transform.set_random_state(seed)
     model_config = full_config.get("model", {})
     
     img_root, mask_root = config.get("img_path"), config.get("mask_path")
@@ -239,13 +254,24 @@ def main():
         "unet": "UNet.py",
         "attention_unet": "AttentionUNet.py",
         "swin_unetr": "SwinUNETR.py",
-        "vnet": "VNet.py"
+        "vnet": "VNet.py",
+        "gusl": "GUSL.py"
     }
-    
+
     if model_type in model_source_map:
         model_src = os.path.join("models", model_source_map[model_type])
         if os.path.exists(model_src):
             shutil.copy2(model_src, os.path.join(artifact_path, model_source_map[model_type]))
+
+    # Model (built before the dataset: it decides whether patches get div-32 padding)
+    patch_size = config.get("training_patch_size", [16, 64, 64])
+    spatial_dims = 3 if patch_size[0] > 1 else 2
+
+    if model_type in full_config.get("model", {}):
+        full_config["model"][model_type]["spatial_dims"] = spatial_dims
+
+    model = build_model_from_config(full_config)
+    config.setdefault("pad_div32", getattr(model, "pad_div32", True))
 
     # Dataset & Dataloaders
     train_ds, val_ds = build_train_dataset_from_config(full_config, train_transform, val_transform)
@@ -271,24 +297,32 @@ def main():
         pin_memory=True
     )
     
-    # Model
-    patch_size = config.get("training_patch_size", [16, 64, 64])
-    spatial_dims = 3 if patch_size[0] > 1 else 2
-    
-    if model_type in full_config.get("model", {}):
-        full_config["model"][model_type]["spatial_dims"] = spatial_dims
-        
-    model = build_model_from_config(full_config)
     criterion = build_loss_from_config(full_config)
     metrics = build_metrics_from_config(full_config)
-    
+
     device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device)
+
+    # Non-gradient models (GUSL) train in one closed-form pass, then get the same validation report
+    if hasattr(model, "fit"):
+        model.fit(train_ds, val_ds, full_config, device)
+        save_checkpoint(model, weight_path, model_name)
+        val_results = valid_epoch(model, val_loader, criterion, metrics, device, epoch=0)
+        logger.info(" | ".join(f"{k}: {v:.4f}" for k, v in val_results.items()))
+        logging.info("Training complete.")
+        return
 
     # Note: If loading an existing model for fine-tuning, you would use load_checkpoint(path) here.
     
     optimizer = optim.AdamW(model.parameters(), lr=config.get("learning_rate", 1e-4), weight_decay=config.get("weight_decay", 1e-5))
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    # Linear warmup, then cosine decay to 1% of the base LR over the remaining epochs
+    n_epochs = config.get("training_epochs", 30)
+    warmup = config.get("warmup_epochs", 5)
+    def lr_factor(e):
+        if e < warmup:
+            return (e + 1) / warmup
+        return 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * (e - warmup) / max(1, n_epochs - warmup)))
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
     
     history: Dict[str, Dict[str, List[float]]] = {n: {"train": [], "val": []} for n in list(metrics.keys()) + ["loss"]}
     best_val_loss = float("inf")
@@ -302,8 +336,8 @@ def main():
     # but based on user request, let's just use loss for training to be fastest.
     # We will compute all metrics only during validation.
     
-    for epoch in range(config.get("training_epochs", 30)):
-        print("\n"); logger.info(f"Epoch {epoch + 1}")
+    for epoch in range(n_epochs):
+        print("\n"); logger.info(f"Epoch {epoch + 1}  lr={optimizer.param_groups[0]['lr']:.2e}")
         
         # Calculate heavy metrics only on interval epochs
         is_metric_epoch = (epoch + 1) % metric_interval == 0
@@ -349,7 +383,7 @@ def main():
 
         val_avg_loss = val_results["loss"]
 
-        scheduler.step(val_avg_loss)
+        scheduler.step()
         if val_avg_loss < best_val_loss:
             best_val_loss = val_avg_loss; save_checkpoint(model, weight_path, model_name)
         

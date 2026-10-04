@@ -7,6 +7,7 @@ class AttentionUNet(nn.Module):
     A wrapper for MONAI's AttentionUnet.
     Uses attention gates to focus on relevant spatial areas.
     """
+    pad_div32 = False  # only needs dims divisible by its total stride, not 32
     def __init__(
         self, 
         spatial_dims, 

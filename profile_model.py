@@ -1,8 +1,9 @@
 """
 profile_model.py — FLOPs, timing, and memory profiler for Chulab-Signal_Segmentation models.
 
-Profiles all four models (UNet, AttentionUNet, SwinUNETR, VNet) or a single selected model
-using random synthetic tensors. No real dataset required.
+Profiles all four DL models (UNet, AttentionUNet, SwinUNETR, VNet) or a single selected model
+using random synthetic tensors. No real dataset required. GUSL has no weights before training,
+so profile it from a trained checkpoint (--checkpoint works for any saved .pth).
 
 Usage:
   python profile_model.py                                    # all models, 3D defaults
@@ -11,6 +12,7 @@ Usage:
   python profile_model.py --spatial_dims 2 --patch 1 64 64  # 2D mode
   python profile_model.py --batch_size 4 --n_runs 20        # larger batch / more runs
   python profile_model.py --device cpu                       # CPU profiling
+  python profile_model.py --checkpoint out/GUSL_v1/weights/GUSL_v1.pth --patch 16 64 64 --batch_size 16
 """
 
 import argparse
@@ -25,6 +27,7 @@ import torch
 import torch.nn as nn
 
 from models.factory import build_model_from_config
+from models.GUSL import FeatGen, Regressor
 
 
 # ── formatting helpers ────────────────────────────────────────────────────────
@@ -73,10 +76,11 @@ def _flops_conv(m, inp, out):
     return 2 * kernel_ops * out.shape[1] * out_elems
 
 def _flops_convtranspose(m, inp, out):
+    # each INPUT element scatters into out_channels/groups x kernel outputs (counting output elements
+    # over-counts by stride^dims, e.g. 8x for a stride-2 3D up-convolution)
     k = m.kernel_size if isinstance(m.kernel_size, (list, tuple)) else [m.kernel_size]
-    kernel_ops = (m.in_channels // m.groups) * int(torch.prod(torch.tensor(k, dtype=torch.float)).item())
-    out_elems  = out.numel() // out.shape[1]
-    return 2 * kernel_ops * out.shape[1] * out_elems
+    kernel_vol = int(torch.prod(torch.tensor(k, dtype=torch.float)).item())
+    return 2 * inp[0].numel() * (m.out_channels // m.groups) * kernel_vol
 
 def _flops_linear(m, inp, out):
     return 2 * m.in_features * out.numel()
@@ -138,6 +142,9 @@ _MODULE_REGISTRY = {
     nn.Dropout:             None,
     nn.Dropout2d:           None,
     nn.Dropout3d:           None,
+    # GUSL stages (FeatGen = Saab/raw/grad features, Regressor = RFT + LNT + XGBoost)
+    FeatGen:                None,
+    Regressor:              None,
 }
 
 
@@ -281,13 +288,28 @@ def profile_one(model_type, args, device):
 
     cfg = make_config(model_type, args.spatial_dims, args.in_channels, args.out_channels, args.patch)
     try:
-        model = build_model_from_config(cfg).to(device)
+        if args.checkpoint:
+            model = torch.load(args.checkpoint, weights_only=False).to(device)
+        elif model_type == "gusl":
+            raise ValueError("GUSL must be trained first; pass --checkpoint path/to/model.pth")
+        else:
+            model = build_model_from_config(cfg).to(device)
     except Exception as e:
         print(f"  [SKIP] Could not build {model_type}: {e}")
         return
 
     total_params, trainable_params = _param_count(model)
     print(f"  Parameters : {total_params:,} total  ({trainable_params:,} trainable)")
+
+    if hasattr(model, "flop_report"):   # GUSL: analytic per-voxel cost (hooks can't see XGBoost)
+        rows, tot = model.flop_report()
+        print(f"\n  GUSL cost per output voxel (MACs: algorithmic / as implemented; FLOPs = 2 x MACs)")
+        print(f"  {'level':>5} {'vox frac':>8} {'MACs alg':>10} {'MACs impl':>10} {'other ops':>10} {'tree cmp':>10}")
+        for r in rows:
+            print(f"  {r['level']:>5} {r['voxel_fraction']:>8.4f} {r['macs_alg']:>10.0f} {r['macs_impl']:>10.0f} {r['ops']:>10.0f} {r['tree_cmp']:>10.0f}")
+        print(f"  {'total':>5} {'':>8} {tot['macs_alg']:>10.0f} {tot['macs_impl']:>10.0f} {tot['ops']:>10.0f} {tot['tree_cmp']:>10.0f}")
+        print(f"  FLOPs/voxel: {_fmt_flops(2 * tot['macs_alg'])} algorithmic, {_fmt_flops(2 * tot['macs_impl'])} as implemented, "
+              f"+ {tot['tree_cmp']:.0f} tree comparisons")
 
     # SwinUNETR needs spatial dims divisible by 32
     spatial = list(args.patch if args.spatial_dims == 3 else args.patch[-2:])
@@ -305,8 +327,13 @@ def profile_one(model_type, args, device):
         total_flops = sum(v["flops"]  for v in mod_stats.values())
         total_time  = sum(v["time_s"] for v in mod_stats.values())
 
+        n_voxels = args.batch_size
+        for s in spatial:
+            n_voxels *= s
         print(f"  Total FLOPs : {_fmt_flops(total_flops)}"
               + (f"  ({_fmt_flops(total_flops / args.batch_size)} / sample)" if args.batch_size > 1 else ""))
+        print(f"  FLOPs/pixel : {_fmt_flops(total_flops / n_voxels)}"
+              f"   (batch={args.batch_size}, volume={'×'.join(str(s) for s in spatial)})")
 
         # Sort by time descending
         rows = sorted(mod_stats.items(), key=lambda kv: -kv[1]["time_s"])
@@ -343,6 +370,8 @@ def profile_one(model_type, args, device):
     # ── forward + backward ──
     print(f"\n  Forward + backward timing...")
     try:
+        if trainable_params == 0:
+            raise RuntimeError("no trainable parameters (non-gradient model)")
         bwd_mean, bwd_std = measure_forward_backward(model, x, device, args.n_warmup, args.n_runs)
         print(f"  Fwd+Bwd  : {_fmt_time(bwd_mean)} ± {_fmt_time(bwd_std)}")
         if fwd_mean:
@@ -372,12 +401,14 @@ def profile_one(model_type, args, device):
 def parse_args():
     p = argparse.ArgumentParser(description="Chulab model profiler (synthetic data)")
     p.add_argument("--model", type=str, default="all",
-                   choices=["all", "unet", "attention_unet", "swin_unetr", "vnet"])
+                   choices=["all", "unet", "attention_unet", "swin_unetr", "vnet", "gusl"])
+    p.add_argument("--checkpoint",   type=str, default=None,
+                   help="Profile a saved model (.pth) instead of building an untrained one. Required for gusl.")
     p.add_argument("--spatial_dims", type=int, default=3, choices=[2, 3])
-    p.add_argument("--patch",        type=int, nargs="+", default=[16, 64, 64])
+    p.add_argument("--patch",        type=int, nargs="+", default=[32, 64, 64])
     p.add_argument("--in_channels",  type=int, default=1)
     p.add_argument("--out_channels", type=int, default=1)
-    p.add_argument("--batch_size",   type=int, default=2)
+    p.add_argument("--batch_size",   type=int, default=128)
     p.add_argument("--n_warmup",     type=int, default=3)
     p.add_argument("--n_runs",       type=int, default=10)
     p.add_argument("--device",       type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -390,10 +421,10 @@ def main():
     args = parse_args()
     device = torch.device(f"cuda:{args.gpu}" if args.gpu is not None else args.device)
 
-    models_to_run = (
-        ["unet", "attention_unet", "swin_unetr", "vnet"]
-        if args.model == "all" else [args.model]
-    )
+    if args.checkpoint:
+        models_to_run = [args.model if args.model != "all" else "checkpoint"]
+    else:
+        models_to_run = ["unet", "attention_unet", "swin_unetr", "vnet"] if args.model == "all" else [args.model]
 
     spatial_str = "×".join(str(s) for s in args.patch)
     print(f"\n{'━'*68}")

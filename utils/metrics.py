@@ -219,12 +219,35 @@ def compute_metrics(tp: int, fp: int, fn: int, tn: int, gt: np.ndarray = None, p
     prec = tp / (tp + fp) if (tp + fp) else 0.0
     rec = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = (2 * prec * rec) / (prec + rec) if (prec + rec) else 0.0
-    
+
+    # Specificity + negative-class P/R/F1 for imbalance-robust metrics
+    spec = tn / (tn + fp) if (tn + fp) else 0.0
+    prec_neg = tn / (tn + fn) if (tn + fn) else 0.0
+    rec_neg = spec
+    f1_neg = (2 * prec_neg * rec_neg) / (prec_neg + rec_neg) if (prec_neg + rec_neg) else 0.0
+
+    balanced_acc = (rec + spec) / 2.0          # mean of per-class recall
+    balanced_f1 = (f1 + f1_neg) / 2.0          # macro-F1 over pos/neg
+    g_mean = float(np.sqrt(rec * spec))        # geometric mean of recall+specificity
+    youden = rec + spec - 1.0                  # informedness (J statistic)
+
+    # Cohen's kappa: chance-corrected agreement
+    if total:
+        pe = ((tp + fp) * (tp + fn) + (fn + tn) * (fp + tn)) / (total * total)
+        kappa = (acc - pe) / (1.0 - pe) if pe != 1.0 else 0.0
+    else:
+        kappa = 0.0
+
     metrics = {
         "accuracy": float(acc),
         "precision": float(prec),
         "recall": float(rec),
         "f1": float(f1),
+        "balanced_accuracy": float(balanced_acc),
+        "balanced_f1": float(balanced_f1),
+        "g_mean": float(g_mean),
+        "youden": float(youden),
+        "cohen_kappa": float(kappa),
         "tp": float(tp),
         "fp": float(fp),
         "fn": float(fn),

@@ -24,13 +24,16 @@ VALID_EXTS = (".tif", ".tiff")
 # Headers for the detailed data
 DETAILED_HEADERS = [
     "parent_folder", "image_folder", "model_name", "files_evaluated", "pixels_total", 
-    "tp", "fp", "fn", "tn", "accuracy", "precision", "recall", "f1", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc", "gt_count", "pr_count"
+    "tp", "fp", "fn", "tn", "accuracy", "balanced_accuracy", "precision", "recall", "f1", "balanced_f1",
+    "g_mean", "youden", "cohen_kappa", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc", "gt_count", "pr_count"
 ]
 
 # Headers for the summary rows
 SUMMARY_HEADERS = [
-    "model_name", "accuracy_mean", "accuracy_std", "precision_mean", "precision_std",
-    "recall_mean", "recall_std", "f1_mean", "f1_std", "mcc_mean", "hausdorff_mean", "cldice_mean", "obj_f1_mean", "pr_auc_mean"
+    "model_name", "accuracy_mean", "accuracy_std", "balanced_accuracy_mean", "balanced_accuracy_std",
+    "precision_mean", "precision_std", "recall_mean", "recall_std", "f1_mean", "f1_std",
+    "balanced_f1_mean", "balanced_f1_std", "g_mean_mean", "youden_mean", "cohen_kappa_mean",
+    "mcc_mean", "hausdorff_mean", "cldice_mean", "obj_f1_mean", "pr_auc_mean"
 ]
 
 def list_files(path: Path, exts: Tuple[str, ...] = VALID_EXTS) -> List[Path]:
@@ -64,6 +67,15 @@ def write_results(rows: List[Dict[str, object]], summary_rows: List[Dict[str, ob
             for r in rows: w.writerow({k: r.get(k) for k in SUMMARY_HEADERS})
         logger.info(f"Detailed results saved to {csv_path}")
 
+def _build_slice_index(pred_dir: Path) -> dict:
+    """Map trailing numeric suffix -> pred file path for fallback matching."""
+    index = {}
+    for p in list_files(pred_dir):
+        m = re.search(r"(\d+)$", p.stem)
+        if m:
+            index[m.group(1)] = p
+    return index
+
 def evaluate_triplet(gt_dir: Path, pred_dir: Path, metric_cfg: dict = None) -> Dict[str, float]:
     metric_cfg = metric_cfg or {}
     # Extract params from config
@@ -74,9 +86,10 @@ def evaluate_triplet(gt_dir: Path, pred_dir: Path, metric_cfg: dict = None) -> D
     conn = obj_p.get("connectivity", None)
 
     gt_files = list_files(gt_dir)
+    pred_index = _build_slice_index(pred_dir)
     tp = fp = fn = tn = 0
     file_count = 0
-    
+
     # Trackers for slice-wise complex metrics
     mcc_list = []
     hd_list = []
@@ -85,13 +98,17 @@ def evaluate_triplet(gt_dir: Path, pred_dir: Path, metric_cfg: dict = None) -> D
     prauc_list = []
     gt_count_total = 0
     pr_count_total = 0
-    
+
     for gtf in gt_files:
         prf = pred_dir / gtf.name
         if not prf.exists():
             alt = gtf.stem + (".tiff" if gtf.suffix == ".tif" else ".tif")
             prf = pred_dir / alt
-        if not prf.exists(): continue
+        if not prf.exists():
+            m = re.search(r"(\d+)$", gtf.stem)
+            if m:
+                prf = pred_index.get(m.group(1))
+        if not prf or not prf.exists(): continue
         try:
             g_arr_raw = tifffile.imread(str(gtf))
             p_arr_raw = tifffile.imread(str(prf))
@@ -157,8 +174,8 @@ def main():
 
     # 1. Find potential GT folders (ending in _mask and NOT .scroll-tif)
     gt_folders = [
-        p for p in root.rglob("*_mask") 
-        if p.is_dir() and not p.name.endswith(".scroll-tif")
+        p for p in root.rglob("*_mask")
+        if p.is_dir() and not p.name.endswith((".scroll-tif", ".scroll-tiff"))
     ]
     
     logger.info(f"Found {len(gt_folders)} GT volumes to analyze.")
@@ -179,8 +196,8 @@ def main():
         # 2. Find prediction folders in the same parent
         # They should contain the model name and end with .scroll-tif
         pred_folders = [
-            p for p in parent.iterdir() 
-            if p.is_dir() and p.name.strip().endswith(".scroll-tif")
+            p for p in parent.iterdir()
+            if p.is_dir() and p.name.strip().endswith((".scroll-tif", ".scroll-tiff"))
         ]
         
         for p_dir in pred_folders:
@@ -209,7 +226,7 @@ def main():
     # Horizontal Summary Aggregation
     model_names = sorted(set(r["model_name"] for r in all_results))
     summary_rows = []
-    metrics_to_agg = ["accuracy", "precision", "recall", "f1", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc"]
+    metrics_to_agg = ["accuracy", "balanced_accuracy", "precision", "recall", "f1", "balanced_f1", "g_mean", "youden", "cohen_kappa", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc"]
     
     for m_name in model_names:
         m_results = [r for r in all_results if r["model_name"] == m_name]

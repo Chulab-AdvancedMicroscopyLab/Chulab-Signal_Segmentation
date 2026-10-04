@@ -23,6 +23,23 @@ def _volume_pad_widths(shape: Tuple[int, int, int], min_size: Tuple[int, int, in
         (0, max(0, min_size[2] - shape[2])), # X end
     ]
 
+def _val_block(shape, patch_size, val_ratio):
+    """
+    Choose the held-out validation block: (axis, cut) with val = [cut:] along axis, or None.
+
+    Prefers the last ~val_ratio of Z (whole slices). If that block would exceed 2x val_ratio of the
+    volume (thin stacks, where it must still be one patch deep), uses the axis with room for the most patches.
+    """
+    if val_ratio <= 0:
+        return None
+    def cut_on(a):
+        return min(int(shape[a] * (1 - val_ratio)), shape[a] - patch_size[a])
+    axis = 0
+    if (shape[0] - cut_on(0)) > 2 * val_ratio * shape[0]:
+        axis = max(range(3), key=lambda a: shape[a] // patch_size[a])
+    cut = cut_on(axis)
+    return (axis, cut) if cut >= patch_size[axis] else None
+
 def _div32_pad_widths(d: int, h: int, w: int, is_3d: bool) -> Tuple[int, int, int]:
     """Return (pad_d, pad_h, pad_w) to make dims divisible by 32."""
     pad_d = (32 - d % 32) % 32 if is_3d else 0
@@ -119,12 +136,16 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         neg_keep_ratio: float = 1.0,
         input_name: str = "Flatten_561",
         mask_name: str = "Flatten_561_mask",
-        io_workers: int = 4
+        io_workers: int = 4,
+        val_ratio: float = 0.0,
+        seed: int = 42,
     ):
         from utils.normalization import build_normalizer_from_config
 
         all_image_patches = []
         all_mask_patches = []
+        all_is_val = []
+        rng = np.random.default_rng(seed)
         
         image_roots = [image_root] if isinstance(image_root, str) else image_root
         mask_roots = [mask_root] if isinstance(mask_root, str) else mask_root
@@ -144,6 +165,7 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         sample_rate = preprocess_config.get("sample_rate", 1.0)
         method = preprocess_config.get("normalize_mode", "z-score")
         pad_mode = preprocess_config.get("pad_mode", "constant")
+        pad_div32 = train_config.get("pad_div32", True)
 
         volumes_found = []
         for img_root, msk_root in zip(image_roots, mask_roots):
@@ -190,25 +212,47 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
             img_data = normalizer(img_data)
             
             indices = generate_patch_indices(img_data.shape, patch_size, overlap)
-            filtered = filter_indices_by_mask(msk_data, indices, neg_keep_ratio)
-            
+            filtered = filter_indices_by_mask(msk_data, indices, neg_keep_ratio, rng=rng)
+
+            # Block-wise validation (see _val_block). Patches crossing the cut are dropped so train and
+            # val never share voxels, even with overlapping crops.
+            block = _val_block(img_data.shape, patch_size, val_ratio)
+            if block is not None:
+                axis, cut = block
+                span = lambda p: (p.z_slice, p.y_slice, p.x_slice)[axis]
+                filtered = [p for p in filtered if span(p).stop <= cut or span(p).start >= cut]
+                is_val = [span(p).start >= cut for p in filtered]
+                val_desc = f"{'zyx'[axis]} >= {cut}"
+            else:
+                # ponytail: volume too small for a validation block; its patches all go to train
+                if val_ratio > 0:
+                    logger.warning(f"Volume {v_display_name}: too small for a validation block; all patches used for training.")
+                is_val = [False] * len(filtered)
+                val_desc = "none"
+
+            # ponytail: empty-mask volumes yield 0 patches; skip so torch.cat doesn't choke on a (0,...) tensor
+            if len(filtered) == 0:
+                logger.info(f"Volume {v_display_name}: Extracted 0 patches, skipping.")
+                continue
+
             img_patches = extract_data_from_indices(img_data, filtered, as_stack=True)
             msk_patches = extract_data_from_indices(msk_data, filtered, as_stack=True)
             
             # Pad patches to divisibility-by-32 required by SwinUNETR (end-only, N dim untouched)
             n, d, h, w = img_patches.shape
-            pad_d, pad_h, pad_w = _div32_pad_widths(d, h, w, is_3d=(d > 1))
+            pad_d, pad_h, pad_w = _div32_pad_widths(d, h, w, is_3d=(d > 1)) if pad_div32 else (0, 0, 0)
             if pad_d > 0 or pad_h > 0 or pad_w > 0:
                 patch_pad = ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w))
                 img_patches = _pad_image(img_patches, patch_pad, pad_mode, fill=normalizer.get_background_value())
-                msk_patches = _pad_image(msk_patches, patch_pad, "constant", fill=0.0)
+                msk_patches = _pad_image(msk_patches, patch_pad, pad_mode, fill=0.0)  # same padding as image, so labels match
                 logger.debug(f"Patches div-32 padded: ({d},{h},{w}) -> ({d+pad_d},{h+pad_h},{w+pad_w})")
 
             # Convert to torch and add channel dimension: (N, D, H, W) -> (N, 1, D, H, W)
             all_image_patches.append(torch.from_numpy(img_patches).unsqueeze(1))
             all_mask_patches.append(torch.from_numpy(msk_patches).unsqueeze(1))
+            all_is_val.extend(is_val)
             
-            logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches.")
+            logger.info(f"Volume {v_display_name}: Extracted {len(filtered)} patches ({sum(is_val)} validation, {val_desc}).")
             
         if not all_image_patches:
             raise RuntimeError(f"No valid patches were extracted from {image_root}")
@@ -219,13 +263,15 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         # patch_indices should be for the final total number of patches
         patch_indices = [PatchMetadata(volume_idx=i) for i in range(len(image_stack))]
         
-        return cls(
+        ds = cls(
             image_tensors=[image_stack],
             mask_tensors=[mask_stack],
             patch_indices=patch_indices,
             transform=transform,
             is_patch_mode=True
         )
+        ds.is_val = np.array(all_is_val, dtype=bool)
+        return ds
 
     def split(
         self, 
@@ -234,15 +280,20 @@ class TrainMicroscopyDataset(BaseMicroscopyDataset):
         train_transform: Optional[Callable] = None,
         val_transform: Optional[Callable] = None
     ) -> tuple[TrainMicroscopyDataset, TrainMicroscopyDataset]:
-        """Splits indices while keeping the underlying shared tensors identical."""
+        """Splits indices while keeping the underlying shared tensors identical.
+
+        Uses the block-wise is_val flags from from_folders when present; otherwise a seeded random split.
+        """
         n = len(self.patch_indices)
-        indices = np.arange(n)
-        rng = np.random.default_rng(seed)
-        rng.shuffle(indices)
-        
-        val_n = int(n * val_ratio)
-        val_idx = indices[:val_n]
-        train_idx = indices[val_n:]
+        is_val = getattr(self, "is_val", None)
+        if is_val is not None and is_val.any():
+            val_idx, train_idx = np.flatnonzero(is_val), np.flatnonzero(~is_val)
+        else:
+            indices = np.arange(n)
+            np.random.default_rng(seed).shuffle(indices)
+            val_n = int(n * val_ratio)
+            val_idx, train_idx = indices[:val_n], indices[val_n:]
+        logger.info(f"Split: {len(train_idx)} train / {len(val_idx)} val patches")
         
         train_ds = TrainMicroscopyDataset(
             image_tensors=self.image_tensors,
@@ -306,7 +357,8 @@ class InferenceMicroscopyDataset(BaseMicroscopyDataset):
         
         # 5. Pad patches to divisibility-by-32 required by SwinUNETR (end-only, N dim untouched)
         n, d, h, w = img_patches.shape
-        pad_d, pad_h, pad_w = _div32_pad_widths(d, h, w, is_3d=(d > 1))
+        pad_div32 = full_config.get("inference", {}).get("pad_div32", True)
+        pad_d, pad_h, pad_w = _div32_pad_widths(d, h, w, is_3d=(d > 1)) if pad_div32 else (0, 0, 0)
         if pad_d > 0 or pad_h > 0 or pad_w > 0:
             patch_pad = ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w))
             img_patches = _pad_image(img_patches, patch_pad, pad_mode, fill=normalizer.get_background_value())
@@ -365,7 +417,9 @@ def build_train_dataset_from_config(
         neg_keep_ratio=neg_ratio,
         input_name=config.get("input_name", "images"),
         mask_name=config.get("mask_name", "images_mask"),
-        io_workers=io_workers
+        io_workers=io_workers,
+        val_ratio=val_ratio,
+        seed=seed,
     )
 
     return full_dataset.split(

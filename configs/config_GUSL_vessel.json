@@ -9,28 +9,36 @@
   "normalization": {
     "description": "Registry of available intensity normalization methods.",
     "z-score": {
-      "std_multiplier": 1.0
+      "std_multiplier": 1
     },
     "min-max": {},
     "histogram": {
       "bins": 1024
     },
     "min-max-gamma": {
-      "gamma": 2.2
+      "gamma": 5
     }
   },
   "outputs": {
     "description": "Registry of global defaults for each output format.",
     "zarr": {
-      "chunk_size": [128, 128, 128]
+      "chunk_size": [
+        128,
+        128,
+        128
+      ]
     },
     "ome-zarr": {
       "n_level": 5,
       "resize_factor": 2,
-      "chunk_size": [128, 128, 128]
+      "chunk_size": [
+        128,
+        128,
+        128
+      ]
     },
-    "scroll-tiff": {
-      "axis": 1
+    "scroll-tif": {
+      "axis": 0
     },
     "single-tiff": {}
   },
@@ -40,17 +48,45 @@
       "spatial_dims": 3,
       "in_channels": 1,
       "out_channels": 1,
-      "channels": [32, 64, 128, 256],
-      "strides": [1, 2, 2],
+      "channels": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ],
+      "strides": [
+        2,
+        2,
+        2,
+        2
+      ],
       "num_res_units": 2,
       "dropout": 0.1
+    },
+    "vnet": {
+      "spatial_dims": 3,
+      "in_channels": 1,
+      "out_channels": 1,
+      "dropout_prob": 0.5
     },
     "attention_unet": {
       "spatial_dims": 3,
       "in_channels": 1,
       "out_channels": 1,
-      "channels": [32, 64, 128, 256],
-      "strides": [1, 2, 2],
+      "channels": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ],
+      "strides": [
+        2,
+        2,
+        2,
+        2
+      ],
       "dropout": 0.1
     },
     "swin_unetr": {
@@ -60,29 +96,59 @@
       "feature_size": 48,
       "use_checkpoint": false
     },
-    "vnet": {
-      "spatial_dims": 3,
-      "in_channels": 1,
-      "out_channels": 1,
-      "dropout_prob": 0.5
-    },
     "gusl": {
       "_comment": "Non-DL coarse-to-fine model (Saab + RFT + LNT + XGBoost). Per-level lists run deepest -> level 1 (one value = all levels). Level L works at XY scale 1/2^(L-1).",
-      "levels": 2,
-      "kernel_size": [3, 3],
-      "kernel_depth": [3, 3],
-      "neigh_size": [3, 3],
-      "neigh_depth": [1, 1],
-      "neigh_stride": [2, 2],
-      "use_grad": [true, true],
-      "grad_size": [3, 5],
-      "grad_depth": [3, 3],
+      "levels": 3,
+      "kernel_size": [
+        3,
+        3,
+        3
+      ],
+      "kernel_depth": [
+        3,
+        3,
+        3
+      ],
+      "neigh_size": [
+        3,
+        3,
+        3
+      ],
+      "neigh_depth": [
+        5,
+        5,
+        5
+      ],
+      "neigh_stride": [
+        2,
+        2,
+        2
+      ],
+      "use_grad": [
+        true,
+        true,
+        true
+      ],
+      "grad_size": [
+        3,
+        3,
+        5
+      ],
+      "grad_depth": [
+        3,
+        3,
+        3
+      ],
       "n_bins": 32,
-      "n_selected": 500,
+      "n_selected": 150,
       "lnt_depth": 3,
-      "lnt_num_tree": 150,
+      "lnt_num_tree": 30,
       "_comment_sampling": "Voxel samples per level: positives and negatives within boundary_window of the mask are always eligible, other negatives with prob neg_keep_frac; caps bound RAM. decode_samples x ~600 features x 4 B = host RAM for XGBoost.",
-      "boundary_window": [11, 21],
+      "boundary_window": [
+        11,
+        11,
+        21
+      ],
       "neg_keep_frac": 0.4,
       "saab_samples": 200000,
       "encode_samples": 2000000,
@@ -90,13 +156,16 @@
       "val_samples": 1000000,
       "_comment_head": "Final regressor per level: xgboost (trees) or mlp (torch MLP on GPU; mlp_hidden [] = linear model). Both early-stop on the validation sample.",
       "head": "xgboost",
-      "mlp_hidden": [256, 128],
+      "mlp_hidden": [
+        256,
+        128
+      ],
       "mlp_epochs": 50,
       "mlp_lr": 0.001,
       "_comment_xgb": "XGBoost settings (head = xgboost).",
-      "n_estimators": 3000,
-      "max_depth": 8,
-      "learning_rate": 0.2,
+      "n_estimators": 150,
+      "max_depth": 6,
+      "learning_rate": 0.3,
       "early_stopping_rounds": 30,
       "max_bin": 256,
       "seed": 42
@@ -112,8 +181,8 @@
       "gamma": 2.0
     },
     "tversky": {
-      "alpha": 0.5,
-      "beta": 0.5,
+      "alpha": 0.3,
+      "beta": 0.7,
       "smooth": 1e-06
     },
     "log_cosh_dice": {
@@ -149,44 +218,56 @@
     "device": "cuda:0",
     "_comment_paths": "data_path = list of training data directories; save_path = root dir for weights and logs.",
     "data_path": [
-      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/TH/YYC/training-data/I-EN-3D"
+      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Lectin/green_computing/training-data/YIN-HSU-3D-special"
     ],
-    "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/TH/YYC/I-EN-3D",
+    "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin",
     "_comment_model": "model_name = experiment subfolder under save_path; model_type = architecture key from the model registry above.",
-    "model_name": "UNet_v1",
-    "model_type": "unet",
-    "input_name": "Flatten_561",
-    "mask_name": "Flatten_561_mask",
+    "model_name": "GUSL_v7",
+    "model_type": "gusl",
+    "input_name": "images",
+    "mask_name": "images_mask",
     "_comment_preprocess": "normalize_mode = z-score|min-max|histogram|min-max-gamma; high_cut clips intensity before normalization (null = no clip).",
     "preprocess": {
       "normalize_mode": "z-score",
       "pad_mode": "reflect",
       "sample_rate": 1.0,
       "low_cut": null,
-      "high_cut": 500
+      "high_cut": null
     },
     "_comment_loss": "Weighted sum of loss functions. Keys are loss names from the loss registry, values are their scalar weights.",
     "loss": {
-      "dice": 1,
-      "focal": 0.2
+      "tversky": 1,
+      "focal": 0.3
     },
     "_comment_metrics": "Metrics evaluated each metric_interval epochs. Keys from the metrics registry.",
     "metrics": [
       "dice_soft",
       "dice_hard",
-      "iou"
+      "bce"
     ],
     "metric_interval": 1,
     "val_ratio": 0.1,
     "seed": 42,
     "training_epochs": 150,
-    "training_batch_size": 8,
+    "training_batch_size": 16,
     "training_num_workers": 8,
     "_comment_patch": "training_patch_size = [D, H, W] of each 3D crop fed to the model; training_overlay = voxel overlap between adjacent crops; training_neg_keep_ratio = fraction of background-only patches retained.",
-    "training_patch_size": [16, 64, 64],
-    "training_overlay": [0, 0, 0],
-    "training_neg_keep_ratio": 0.2,
-    "training_resize_factor": [1.0, 1.0, 1.0],
+    "training_patch_size": [
+      32,
+      64,
+      64
+    ],
+    "training_overlay": [
+      0,
+      0,
+      0
+    ],
+    "training_neg_keep_ratio": 0.5,
+    "training_resize_factor": [
+      1.0,
+      1.0,
+      1.0
+    ],
     "_comment_training": "training_epochs = total epochs; training_batch_size = patches per GPU step; learning_rate = Adam optimizer LR.",
     "learning_rate": 0.0001,
     "visualize_preview": true
@@ -194,39 +275,57 @@
   "inference": {
     "device": "cuda:0",
     "_comment_paths": "input_path / input_name = source volume location; output_path / output_name = destination for the predicted mask.",
-    "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/TH/YYC/testing-data/I-EN-3D",
-    "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/TH/YYC/testing-data/I-EN-3D",
-    "input_name": "Flatten_561",
-    "output_name": "Flatten_561_mask_unet_v1",
+    "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Lectin/green_computing/testing-data/YIN-HSU-3D-special/00",
+    "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Lectin/green_computing/testing-data/YIN-HSU-3D-special/00",
+    "input_name": "images",
+    "output_name": "images_mask_GUSL_lean_L5",
+    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/GUSL_lean_L5/weights/GUSL_lean_L5.pth",
     "_comment_preprocess": "Same normalization applied at inference. sample_rate controls fraction of voxels sampled for global stats computation.",
     "preprocess": {
       "normalize_mode": "z-score",
       "pad_mode": "reflect",
       "sample_rate": 1.0,
       "low_cut": null,
-      "high_cut": 500
+      "high_cut": null
     },
-    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/TH/YYC/I-EN-3D/UNet_v1/weights/UNet_v1.pth",
     "_comment_patch": "inference_patch_size = [D, H, W] sliding window; inference_overlay = voxel overlap between windows (larger = smoother tile boundaries, slower).",
     "batch_size": 16,
-    "inference_patch_size": [16, 64, 64],
-    "inference_overlay": [8, 16, 16],
-    "inference_resize_factor": [1.0, 1.0, 1.0],
+    "inference_patch_size": [
+      32,
+      64,
+      64
+    ],
+    "inference_overlay": [
+      8,
+      16,
+      16
+    ],
+    "inference_resize_factor": [
+      1.0,
+      1.0,
+      1.0
+    ],
     "_comment_output": "type = output format (Zarr|Scroll-Tiff|Single-Tiff); dtype = output bit depth; resize_order = interpolation order for optional spatial resize.",
     "output": {
       "type": "Scroll-Tiff",
-      "dtype": "uint16",
+      "dtype": "uint8",
+      "_comment_threshold": "Best cut-off for GUSL_lean_L5 on the Lectin test. Half-resolution variant: add finest_level 2 (GUSL_lean_half, cut-off 0.5) for ~3x less inference energy but fewer detected branch points.",
+      "threshold": 0.7,
       "resize_order": 0
     }
   },
   "converter": [
     {
-      "input_path": "/mnt/DAS218T/Ian_Huang/others/Pan_MK/Pan_MK_55/Ex_647_Em_690_stitched.zarr",
-      "output_path": "/mnt/NAS50T/NTUH_Ming_Kai_Pan/Nebulum/Pan_MK_55",
+      "input_path": "/mnt/DAS218T/Ian_Huang/project_20260310_Shaun_BV_tumor/20260312_12_09_11_PC25J0018_treat_4_tumor_CD31_640_4x_z2_Destripe_DONE/All_Channels_anno_shrink.tif",
+      "output_path": "/mnt/DAS218T/Ian_Huang/project_20260310_Shaun_BV_tumor/20260312_12_09_11_PC25J0018_treat_4_tumor_CD31_640_4x_z2_Destripe_DONE",
       "output": {
-        "type": "Scroll-Tiff",
-        "dtype": "uint16",
-        "resize_shape": null,
+        "type": "Zarr",
+        "dtype": "uint8",
+        "resize_shape": [
+          3343,
+          5841,
+          7331
+        ],
         "resize_order": 0
       }
     }

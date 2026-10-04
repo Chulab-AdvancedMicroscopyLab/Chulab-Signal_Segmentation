@@ -3,8 +3,15 @@ from skimage.transform import resize
 import math
 import numba
 
+def _gaussian_weight(pd, ph, pw, sigma_scale=0.125, floor=1e-3):
+    """Patch-sized importance map peaking at the centre (MONAI sliding-window convention)."""
+    axes = [np.exp(-0.5 * ((np.arange(n) - (n - 1) / 2) / max(n * sigma_scale, 1e-6)) ** 2) for n in (pd, ph, pw)]
+    w = axes[0][:, None, None] * axes[1][None, :, None] * axes[2][None, None, :]
+    return np.maximum(w / w.max(), floor).astype(np.float32)
+
+
 @numba.njit(fastmath=True)
-def _numba_stitch_loop(reconstruction, weight, patches, positions, pd, ph, pw):
+def _numba_stitch_loop(reconstruction, weight, patches, positions, pd, ph, pw, wmap):
     """
     Highly optimized sequential accumulation loop using Numba.
     Sequential is used to avoid race conditions on overlapping pixels.
@@ -33,9 +40,10 @@ def _numba_stitch_loop(reconstruction, weight, patches, positions, pd, ph, pw):
         target_w = end_x - start_x
         
         if target_d > 0 and target_h > 0 and target_w > 0:
+            w = wmap[p_start_z:p_start_z+target_d, p_start_y:p_start_y+target_h, p_start_x:p_start_x+target_w]
             reconstruction[start_z:end_z, start_y:end_y, start_x:end_x] += \
-                patches[i][p_start_z:p_start_z+target_d, p_start_y:p_start_y+target_h, p_start_x:p_start_x+target_w]
-            weight[start_z:end_z, start_y:end_y, start_x:end_x] += 1
+                patches[i][p_start_z:p_start_z+target_d, p_start_y:p_start_y+target_h, p_start_x:p_start_x+target_w] * w
+            weight[start_z:end_z, start_y:end_y, start_x:end_x] += w
 
 @numba.njit(parallel=True, nogil=True)
 def _numba_finalize_reconstruction(reconstruction, weight, prev_z_slices, logit_threshold):
@@ -71,10 +79,13 @@ def _numba_finalize_reconstruction(reconstruction, weight, prev_z_slices, logit_
                 
     return binary_out
 
-def stitch_image(patches, positions, original_shape, patch_size, resize_factor=(1, 1, 1), prev_z_slices=None, z_overlay=0, threshold=0.5, output_dtype=np.uint8):
+def stitch_image(patches, positions, original_shape, patch_size, resize_factor=(1, 1, 1), prev_z_slices=None, z_overlay=0, threshold=0.5, output_dtype=np.uint8, blend="gaussian"):
     """
     Reconstructs the full 3D volume from patches and blends overlapping Z slices across chunks.
     Uses highly parallel Numba kernels for all major computations.
+
+    blend: "gaussian" weights each patch voxel by a centre-peaked map, so patch borders (least
+    context) count less where patches overlap; "constant" is a plain average.
     """
     # 1. Allocate accumulation buffers
     reconstruction = np.zeros(original_shape, dtype=np.float32)
@@ -97,7 +108,8 @@ def stitch_image(patches, positions, original_shape, patch_size, resize_factor=(
 
     # 3. XY Patch Accumulation (Sequential loop, but JIT-accelerated)
     positions_arr = np.array(positions, dtype=np.int64)
-    _numba_stitch_loop(reconstruction, weight, patches_to_stitch, positions_arr, pd, ph, pw)
+    wmap = _gaussian_weight(pd, ph, pw) if blend == "gaussian" else np.ones((pd, ph, pw), dtype=np.float32)
+    _numba_stitch_loop(reconstruction, weight, patches_to_stitch, positions_arr, pd, ph, pw, wmap)
 
     # 4. Finalize: Division, Z-blend, and Threshold (Fused Parallel Kernel)
     if threshold == 0.5:
