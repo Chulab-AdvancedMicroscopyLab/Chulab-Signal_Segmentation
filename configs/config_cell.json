@@ -146,24 +146,24 @@
   },
   "train": {
     "_comment_device": "GPU device for training, e.g. 'cuda:0', 'cuda:1', or 'cpu'.",
-    "device": "cuda:1",
+    "device": "cuda:0",
     "_comment_paths": "data_path = list of training data directories; save_path = root dir for weights and logs.",
     "data_path": [
-      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/training-data/Hung-Yu-3D-special"
+      "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/TH/YYC/training-data/I-EN-3D"
     ],
-    "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos",
+    "save_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/TH/YYC/I-EN-3D",
     "_comment_model": "model_name = experiment subfolder under save_path; model_type = architecture key from the model registry above.",
-    "model_name": "UNet_v0",
+    "model_name": "UNet_v1",
     "model_type": "unet",
-    "input_name": "images",
-    "mask_name": "images_mask",
+    "input_name": "Flatten_561",
+    "mask_name": "Flatten_561_mask",
     "_comment_preprocess": "normalize_mode = z-score|min-max|histogram|min-max-gamma; high_cut clips intensity before normalization (null = no clip).",
     "preprocess": {
       "normalize_mode": "z-score",
       "pad_mode": "reflect",
       "sample_rate": 1.0,
       "low_cut": null,
-      "high_cut": null
+      "high_cut": 500
     },
     "_comment_loss": "Weighted sum of loss functions. Keys are loss names from the loss registry, values are their scalar weights.",
     "loss": {
@@ -185,28 +185,28 @@
     "_comment_patch": "training_patch_size = [D, H, W] of each 3D crop fed to the model; training_overlay = voxel overlap between adjacent crops; training_neg_keep_ratio = fraction of background-only patches retained.",
     "training_patch_size": [16, 64, 64],
     "training_overlay": [0, 0, 0],
-    "training_neg_keep_ratio": 1.0,
+    "training_neg_keep_ratio": 0.2,
     "training_resize_factor": [1.0, 1.0, 1.0],
     "_comment_training": "training_epochs = total epochs; training_batch_size = patches per GPU step; learning_rate = Adam optimizer LR.",
     "learning_rate": 0.0001,
     "visualize_preview": true
   },
   "inference": {
-    "device": "cuda:1",
+    "device": "cuda:0",
     "_comment_paths": "input_path / input_name = source volume location; output_path / output_name = destination for the predicted mask.",
-    "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special/00",
-    "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/c-Fos/Hung-Yu-3D/testing-data/Hung-Yu-3D-special/00",
-    "input_name": "images",
-    "output_name": "images_mask_unet_v0",
+    "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/TH/YYC/testing-data/I-EN-3D",
+    "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/TH/YYC/testing-data/I-EN-3D",
+    "input_name": "Flatten_561",
+    "output_name": "Flatten_561_mask_unet_v1",
     "_comment_preprocess": "Same normalization applied at inference. sample_rate controls fraction of voxels sampled for global stats computation.",
     "preprocess": {
       "normalize_mode": "z-score",
       "pad_mode": "reflect",
       "sample_rate": 1.0,
       "low_cut": null,
-      "high_cut": null
+      "high_cut": 500
     },
-    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/c-Fos/UNet_v0/weights/UNet_v0.pth",
+    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/TH/YYC/I-EN-3D/UNet_v1/weights/UNet_v1.pth",
     "_comment_patch": "inference_patch_size = [D, H, W] sliding window; inference_overlay = voxel overlap between windows (larger = smoother tile boundaries, slower).",
     "batch_size": 16,
     "inference_patch_size": [16, 64, 64],
