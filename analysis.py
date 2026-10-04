@@ -24,13 +24,16 @@ VALID_EXTS = (".tif", ".tiff")
 # Headers for the detailed data
 DETAILED_HEADERS = [
     "parent_folder", "image_folder", "model_name", "files_evaluated", "pixels_total", 
-    "tp", "fp", "fn", "tn", "accuracy", "precision", "recall", "f1", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc", "gt_count", "pr_count"
+    "tp", "fp", "fn", "tn", "accuracy", "balanced_accuracy", "precision", "recall", "f1", "balanced_f1",
+    "g_mean", "youden", "cohen_kappa", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc", "gt_count", "pr_count"
 ]
 
 # Headers for the summary rows
 SUMMARY_HEADERS = [
-    "model_name", "accuracy_mean", "accuracy_std", "precision_mean", "precision_std",
-    "recall_mean", "recall_std", "f1_mean", "f1_std", "mcc_mean", "hausdorff_mean", "cldice_mean", "obj_f1_mean", "pr_auc_mean"
+    "model_name", "accuracy_mean", "accuracy_std", "balanced_accuracy_mean", "balanced_accuracy_std",
+    "precision_mean", "precision_std", "recall_mean", "recall_std", "f1_mean", "f1_std",
+    "balanced_f1_mean", "balanced_f1_std", "g_mean_mean", "youden_mean", "cohen_kappa_mean",
+    "mcc_mean", "hausdorff_mean", "cldice_mean", "obj_f1_mean", "pr_auc_mean"
 ]
 
 def list_files(path: Path, exts: Tuple[str, ...] = VALID_EXTS) -> List[Path]:
@@ -223,7 +226,7 @@ def main():
     # Horizontal Summary Aggregation
     model_names = sorted(set(r["model_name"] for r in all_results))
     summary_rows = []
-    metrics_to_agg = ["accuracy", "precision", "recall", "f1", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc"]
+    metrics_to_agg = ["accuracy", "balanced_accuracy", "precision", "recall", "f1", "balanced_f1", "g_mean", "youden", "cohen_kappa", "mcc", "hausdorff", "cldice", "obj_f1", "pr_auc"]
     
     for m_name in model_names:
         m_results = [r for r in all_results if r["model_name"] == m_name]
