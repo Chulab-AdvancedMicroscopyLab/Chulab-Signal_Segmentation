@@ -99,7 +99,6 @@
     "gusl": {
       "_comment": "Non-DL coarse-to-fine model (Saab + RFT + LNT + XGBoost). Per-level lists run deepest -> level 1 (one value = all levels). Level L works at XY scale 1/2^(L-1).",
       "levels": 3,
-      "finest_level": 2,
       "kernel_size": [
         3,
         3,
@@ -279,8 +278,8 @@
     "input_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Lectin/green_computing/testing-data/YIN-HSU-3D-special/00",
     "output_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/datas/Lectin/green_computing/testing-data/YIN-HSU-3D-special/00",
     "input_name": "images",
-    "output_name": "images_mask_GUSL_v6_ns300",
-    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/GUSL_lean_half/weights/GUSL_lean_half.pth",
+    "output_name": "images_mask_GUSL_lean_L5",
+    "model_path": "/mnt/DAS218T/Ian_Huang/Chulab-Signal_Segmentation/output/Lectin/GUSL_lean_L5/weights/GUSL_lean_L5.pth",
     "_comment_preprocess": "Same normalization applied at inference. sample_rate controls fraction of voxels sampled for global stats computation.",
     "preprocess": {
       "normalize_mode": "z-score",
@@ -310,8 +309,8 @@
     "output": {
       "type": "Scroll-Tiff",
       "dtype": "uint8",
-      "_comment_threshold": "Best cut-off for GUSL_lean_half on the Lectin test (full-resolution GUSL_lean_L5: 0.7).",
-      "threshold": 0.5,
+      "_comment_threshold": "Best cut-off for GUSL_lean_L5 on the Lectin test. Half-resolution variant: add finest_level 2 (GUSL_lean_half, cut-off 0.5) for ~3x less inference energy but fewer detected branch points.",
+      "threshold": 0.7,
       "resize_order": 0
     }
   },
